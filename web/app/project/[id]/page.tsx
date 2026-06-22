@@ -5,6 +5,7 @@ import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Pill, BarRow, scoreKind, riskKind } from "@/components/ui";
 import { OutcomePie, OutcomeBars, GuideRadar, CompareBars } from "@/components/Charts";
 import { api } from "@/lib/api";
+import { downloadCsv } from "@/lib/csv";
 
 export default function ProjectPage() {
   return <Shell><Dashboard /></Shell>;
@@ -53,6 +54,28 @@ function Dashboard() {
   const chosen = opt.selected_guide_ids.map((gid: string) => byId[gid]).filter(Boolean);
   const strand = (x: any) => (typeof x.strand === "string" ? x.strand : x.strand?.value || "+");
 
+  function exportCsv() {
+    const rows = guides.map((x: any, i: number) => ({
+      rank: i + 1,
+      guide_id: x.guide_id,
+      sequence: x.sequence,
+      pam: x.pam,
+      strand: strand(x),
+      position: x.position,
+      gc_content: x.gc_content.toFixed(3),
+      on_target: x.scores.on_target.toFixed(3),
+      knockout_prob: x.outcome.knockout_prob.toFixed(3),
+      frameshift_prob: x.outcome.frameshift_prob.toFixed(3),
+      functional_disruption: x.outcome.functional_disruption_score.toFixed(3),
+      off_target_risk: x.off_target.risk_score.toFixed(3),
+      off_target_category: x.off_target.risk_category,
+      final_score: x.final_score.toFixed(3),
+      confidence: x.confidence.toFixed(3),
+      in_optimized_set: opt.selected_guide_ids.includes(x.guide_id),
+    }));
+    downloadCsv(`${proj.name}_${id}_guides.csv`, rows);
+  }
+
   return (
     <div>
       <div className="flex justify-between items-start">
@@ -63,6 +86,7 @@ function Dashboard() {
         <div className="text-right">
           <span className="inline-flex items-center gap-2 bg-brand/10 text-brand-dark border border-brand/30 rounded-xl px-3 py-2 font-bold">✓ Optimization complete</span>
           <div className="text-muted text-xs mt-1">Completed in {proj.elapsed}s · {opt.method}</div>
+          <button onClick={exportCsv} className="btn-ghost mt-2 text-sm">⬇ Export results (CSV)</button>
         </div>
       </div>
 

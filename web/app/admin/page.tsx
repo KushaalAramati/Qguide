@@ -4,6 +4,7 @@ import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Button } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { downloadCsv } from "@/lib/csv";
 
 export default function AdminPage() {
   return <Shell><AdminView /></Shell>;
@@ -50,10 +51,30 @@ function AdminView() {
   const totalCredits = (users || []).reduce((s, u) => s + u.credits, 0);
   const totalRuns = (users || []).reduce((s, u) => s + u.runs, 0);
 
+  function exportUsers() {
+    const rows = (users || []).map((u) => ({
+      name: u.name,
+      email: u.email,
+      plan: u.plan,
+      credits: u.credits,
+      design_runs: u.runs,
+      created: u.created,
+      last_login: u.last_login || "",
+    }));
+    downloadCsv(`qguide_users_${new Date().toISOString().slice(0, 10)}.csv`, rows);
+  }
+
   return (
     <div>
-      <div className="font-display font-extrabold text-3xl">🛡️ Admin</div>
-      <div className="text-muted font-medium">Users, activity, and credit control.</div>
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="font-display font-extrabold text-3xl">🛡️ Admin</div>
+          <div className="text-muted font-medium">Users, activity, and credit control.</div>
+        </div>
+        {users && users.length > 0 && (
+          <button onClick={exportUsers} className="btn-ghost text-sm">⬇ Export analytics (CSV)</button>
+        )}
+      </div>
 
       {err && <div className="mt-4 card !bg-bad/5 border-bad/30 text-bad font-semibold">{err}</div>}
 
