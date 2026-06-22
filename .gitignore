@@ -17,7 +17,13 @@ qguide_data.db
 # Local server logs / tooling
 .streamlit_run.log
 .streamlit_err.log
+.api_run.log
+.api_err.log
 .claude/
+
+# Node / Next.js (web frontend has its own .gitignore too)
+node_modules/
+web/.next/
 
 # Secrets (never commit)
 .streamlit/secrets.toml

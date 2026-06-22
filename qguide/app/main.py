@@ -7,6 +7,8 @@ Then open http://127.0.0.1:8000/docs for the interactive API.
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -21,10 +23,12 @@ app = FastAPI(
     ),
 )
 
-# Open CORS so a future React frontend (different origin) can call the API.
+# CORS: allow the React frontend's origin(s). Defaults to "*" for local dev;
+# in production set ALLOWED_ORIGINS to the Vercel URL(s), comma-separated.
+_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
