@@ -29,6 +29,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from qguide.app import store
+
+
+@app.on_event("startup")
+def _startup():
+    store.init_db()
+
+
 app.include_router(router)
 
 
