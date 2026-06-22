@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual env
+.venv/
+venv/
+
+# Runtime data (SQLite DB is created at runtime, never committed)
+qguide_data.db
+*.db
+*.db-wal
+*.db-shm
+
+# Local server logs / tooling
+.streamlit_run.log
+.streamlit_err.log
+.claude/
+
+# Secrets (never commit)
+.streamlit/secrets.toml

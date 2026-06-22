@@ -1,0 +1,57 @@
+{
+  "_comment": "Context-aware weighting rules for Q-Guide. Each block multiplies/adjusts component scores. Values are multipliers (1.0 = neutral). Unknown keys fall back to 'default'. This file is intentionally data-only so it can be edited without touching code.",
+  "version": "1.0",
+
+  "organism": {
+    "default":    { "on_target": 1.00, "off_target_risk": 1.00, "gc": 1.00 },
+    "human":      { "on_target": 1.00, "off_target_risk": 1.10, "gc": 1.00 },
+    "mouse":      { "on_target": 1.00, "off_target_risk": 1.05, "gc": 1.00 },
+    "zebrafish":  { "on_target": 0.98, "off_target_risk": 0.95, "gc": 1.05 },
+    "yeast":      { "on_target": 1.02, "off_target_risk": 0.80, "gc": 0.95 },
+    "e_coli":     { "on_target": 1.05, "off_target_risk": 0.70, "gc": 0.90 }
+  },
+
+  "cell_type": {
+    "default":     { "on_target": 1.00, "knockout": 1.00, "structure": 1.00 },
+    "stem_cell":   { "on_target": 1.05, "knockout": 1.08, "structure": 1.00, "note": "HDR/editing efficient; favors high on-target guides" },
+    "neuron":      { "on_target": 0.90, "knockout": 0.95, "structure": 1.10, "note": "post-mitotic, low editing; favors robust low-structure guides" },
+    "hek293":      { "on_target": 1.10, "knockout": 1.05, "structure": 1.00, "note": "highly transfectable workhorse line" },
+    "primary_t":   { "on_target": 0.95, "knockout": 1.00, "structure": 1.05 },
+    "cancer_line": { "on_target": 1.05, "knockout": 1.02, "structure": 1.00 }
+  },
+
+  "cas_enzyme": {
+    "default":  { "pam": "NGG",  "on_target": 1.00, "off_target_risk": 1.00, "guide_length": 20 },
+    "SpCas9":   { "pam": "NGG",  "on_target": 1.00, "off_target_risk": 1.00, "guide_length": 20 },
+    "SpCas9-HF1":{ "pam": "NGG", "on_target": 0.97, "off_target_risk": 0.60, "guide_length": 20, "note": "high-fidelity variant: lower off-target" },
+    "eSpCas9":  { "pam": "NGG",  "on_target": 0.98, "off_target_risk": 0.65, "guide_length": 20 },
+    "SaCas9":   { "pam": "NNGRRT","on_target": 0.95, "off_target_risk": 0.90, "guide_length": 21 },
+    "Cas12a":   { "pam": "TTTV", "on_target": 0.93, "off_target_risk": 0.85, "guide_length": 23, "note": "5' PAM, staggered cut" }
+  },
+
+  "delivery_method": {
+    "default":      { "on_target": 1.00, "expression_factor": 1.00 },
+    "rnp":          { "on_target": 1.05, "expression_factor": 1.00, "note": "ribonucleoprotein: fast, transient, low off-target" },
+    "plasmid":      { "on_target": 1.00, "expression_factor": 1.00 },
+    "lentivirus":   { "on_target": 1.02, "expression_factor": 1.10, "note": "stable high expression, integration risk" },
+    "aav":          { "on_target": 0.98, "expression_factor": 1.05 },
+    "electroporation":{ "on_target": 1.03, "expression_factor": 1.00 }
+  },
+
+  "temperature": {
+    "_comment": "Editing efficiency vs temperature (Celsius). Multiplier applied to on_target.",
+    "reference_c": 37.0,
+    "optimum_c": 37.0,
+    "falloff_per_degree": 0.02,
+    "min_multiplier": 0.70,
+    "max_multiplier": 1.05
+  },
+
+  "expression_level": {
+    "default": 1.00,
+    "low":     0.85,
+    "medium":  1.00,
+    "high":    1.08,
+    "_comment": "Scales on_target by Cas/guide abundance proxy."
+  }
+}
