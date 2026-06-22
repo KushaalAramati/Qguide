@@ -7,6 +7,7 @@ the Streamlit prototype calls the same `core.pipeline` functions in-process.
 """
 from __future__ import annotations
 
+import os
 import time
 from typing import Dict, List, Optional
 
@@ -14,6 +15,13 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, EmailStr
 
 from qguide.app import auth, billing, store
+
+# Admin allowlist: set ADMIN_EMAILS (comma-separated) on the server.
+ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+
+def is_admin(email: str) -> bool:
+    return (email or "").strip().lower() in ADMIN_EMAILS
 from qguide.app.schemas import DesignRequest, DesignResponse, Guide
 from qguide.core import pipeline
 from qguide.core.explainability import assumptions
@@ -32,6 +40,20 @@ def current_email(authorization: Optional[str] = Header(default=None)) -> str:
     if not email or store.get_user(email) is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
     return email
+
+
+def current_admin(email: str = Depends(current_email)) -> str:
+    if not is_admin(email):
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return email
+
+
+def _account(email: str) -> Optional[Dict]:
+    """Account summary + the is_admin flag (so the UI can show admin tools)."""
+    a = store.account_summary(email)
+    if a is not None:
+        a["is_admin"] = is_admin(email)
+    return a
 
 
 @router.get("/health")
@@ -134,21 +156,25 @@ def signup(body: SignupBody) -> Dict[str, object]:
     if not ok:
         raise HTTPException(status_code=409, detail=msg)
     email = body.email.strip().lower()
-    return {"token": auth.make_token(email), "account": store.account_summary(email)}
+    store.touch_login(email)
+    return {"token": auth.make_token(email), "account": _account(email)}
 
 
 @router.post("/auth/login")
 def login(body: LoginBody) -> Dict[str, object]:
-    ok, msg = store.authenticate(body.email, body.password)
+    ok, reason = store.authenticate(body.email, body.password)
     if not ok:
-        raise HTTPException(status_code=401, detail=msg)
+        # Distinct codes so the UI can show a precise message.
+        if reason == "bad_password":
+            raise HTTPException(status_code=401, detail="Incorrect password. Please try again.")
+        raise HTTPException(status_code=404, detail="No account found for that email.")
     email = body.email.strip().lower()
-    return {"token": auth.make_token(email), "account": store.account_summary(email)}
+    return {"token": auth.make_token(email), "account": _account(email)}
 
 
 @router.get("/me")
 def me(email: str = Depends(current_email)) -> Dict[str, object]:
-    return store.account_summary(email)
+    return _account(email)
 
 
 # --------------------------------------------------------------------------- #
@@ -172,7 +198,28 @@ def buy(body: BuyBody, email: str = Depends(current_email)) -> Dict[str, object]
     if body.credits <= 0:
         raise HTTPException(status_code=400, detail="Credits must be positive.")
     store.buy_credits(email, body.credits, body.price, body.label)
-    return store.account_summary(email)
+    return _account(email)
+
+
+# --------------------------------------------------------------------------- #
+# Admin (gated by ADMIN_EMAILS)                                               #
+# --------------------------------------------------------------------------- #
+@router.get("/admin/users")
+def admin_users(_: str = Depends(current_admin)) -> List[Dict[str, object]]:
+    return store.list_all_users()
+
+
+class SetCreditsBody(BaseModel):
+    email: EmailStr
+    credits: int
+
+
+@router.post("/admin/credits")
+def admin_set_credits(body: SetCreditsBody, admin: str = Depends(current_admin)) -> Dict[str, object]:
+    u = store.set_credits(body.email, body.credits, admin)
+    if u is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return u
 
 
 # --------------------------------------------------------------------------- #

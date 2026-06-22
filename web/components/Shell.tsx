@@ -62,6 +62,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <NavLink href="/buy" icon="💳" label="Buy Credits" active={path === "/buy"} />
         <NavLink href="/new" icon="➕" label="New Project" active={path === "/new"} />
         <NavLink href="/account" icon="👤" label="Account" active={path === "/account"} />
+        {account.is_admin && <NavLink href="/admin" icon="🛡️" label="Admin" active={path === "/admin"} />}
 
         {projects.length > 0 && (
           <div className="mt-2">

@@ -11,6 +11,7 @@ for _ext in ("", "-wal", "-shm"):
         pass
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
 os.environ["JWT_SECRET"] = "test-secret"
+os.environ["ADMIN_EMAILS"] = "admin@test.com"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -48,10 +49,48 @@ def test_duplicate_signup_blocked():
     assert r.status_code == 409
 
 
-def test_login_wrong_password():
+def test_login_wrong_password_precise_message():
     _signup("b@test.com")
     r = client.post("/auth/login", json={"email": "b@test.com", "password": "wrong"})
     assert r.status_code == 401
+    assert r.json()["detail"] == "Incorrect password. Please try again."
+
+
+def test_login_unknown_email():
+    r = client.post("/auth/login", json={"email": "nobody@test.com", "password": "x"})
+    assert r.status_code == 404
+
+
+def test_account_has_is_admin_flag():
+    _signup("admin@test.com", name="Admin")
+    a = client.get("/me", headers=_auth("admin@test.com")).json()
+    assert a["is_admin"] is True
+    _signup("plain@test.com")
+    b = client.get("/me", headers=_auth("plain@test.com")).json()
+    assert b["is_admin"] is False
+
+
+def test_admin_lists_users_and_sets_credits():
+    _signup("admin@test.com", name="Admin")
+    _signup("target@test.com")
+    h = _auth("admin@test.com")
+    users = client.get("/admin/users", headers=h).json()
+    emails = {u["email"] for u in users}
+    assert "target@test.com" in emails and "admin@test.com" in emails
+    r = client.post("/admin/credits", json={"email": "target@test.com", "credits": 500}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["credits"] == 500
+    # the change is visible to the target user, with an admin ledger entry
+    me = client.get("/me", headers=_auth("target@test.com")).json()
+    assert me["credits"] == 500
+    assert any(t["type"] == "admin" for t in me["transactions"])
+
+
+def test_non_admin_cannot_access_admin():
+    _signup("notadmin@test.com")
+    h = _auth("notadmin@test.com")
+    assert client.get("/admin/users", headers=h).status_code == 403
+    assert client.post("/admin/credits", json={"email": "x@test.com", "credits": 1}, headers=h).status_code == 403
 
 
 def test_me_requires_auth():

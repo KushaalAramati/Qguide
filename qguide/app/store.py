@@ -19,7 +19,7 @@ import os
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import Column, Float, Integer, String, Text, select
+from sqlalchemy import Column, Float, Integer, String, Text, select, text
 
 from qguide.app.db import Base, engine, session_scope
 from qguide.app.schemas import DesignRequest, DesignResponse
@@ -39,6 +39,7 @@ class User(Base):
     runs = Column(Integer, nullable=False, default=0)
     counter = Column(Integer, nullable=False, default=0)
     created = Column(String(32), nullable=False)
+    last_login = Column(String(32))
 
 
 class Transaction(Base):
@@ -69,6 +70,19 @@ class Project(Base):
 
 def init_db() -> None:
     Base.metadata.create_all(engine)
+    _migrate()
+
+
+def _migrate() -> None:
+    """Best-effort additive migrations for DBs created before a column existed.
+    Each ALTER runs in its own transaction; a 'duplicate column' error (column
+    already present) is swallowed. Portable across SQLite and Postgres."""
+    for stmt in ["ALTER TABLE users ADD COLUMN last_login VARCHAR(32)"]:
+        try:
+            with engine.begin() as conn:
+                conn.execute(text(stmt))
+        except Exception:
+            pass
 
 
 # --------------------------------------------------------------------------- #
@@ -93,7 +107,8 @@ def _now() -> str:
 
 def _user_dict(u: User) -> Dict:
     return {"name": u.name, "email": u.email, "plan": u.plan, "credits": u.credits,
-            "runs": u.runs, "counter": u.counter, "created": u.created}
+            "runs": u.runs, "counter": u.counter, "created": u.created,
+            "last_login": u.last_login}
 
 
 def _tx_dict(t: Transaction) -> Dict:
@@ -125,13 +140,49 @@ def create_user(name: str, email: str, password: str, bonus: int) -> Tuple[bool,
 
 
 def authenticate(email: str, password: str) -> Tuple[bool, str]:
+    """Returns (ok, reason). reason is 'no_user' or 'bad_password' on failure so
+    the UI can show a precise message."""
     email = (email or "").strip().lower()
     init_db()
     with session_scope() as s:
         u = s.get(User, email)
-        if not u or not _check_pw(password, u.pw_salt, u.pw_hash):
-            return False, "Invalid email or password."
-    return True, "Signed in."
+        if not u:
+            return False, "no_user"
+        if not _check_pw(password, u.pw_salt, u.pw_hash):
+            return False, "bad_password"
+        u.last_login = _now()
+    return True, "ok"
+
+
+def touch_login(email: str) -> None:
+    with session_scope() as s:
+        u = s.get(User, (email or "").strip().lower())
+        if u:
+            u.last_login = _now()
+
+
+# --------------------------------------------------------------------------- #
+# Admin                                                                         #
+# --------------------------------------------------------------------------- #
+def list_all_users() -> List[Dict]:
+    with session_scope() as s:
+        users = s.scalars(select(User).order_by(User.created.desc())).all()
+        return [_user_dict(u) for u in users]
+
+
+def set_credits(email: str, credits: int, admin_email: str) -> Optional[Dict]:
+    """Set a user's balance to an absolute value (admin action), logged."""
+    email = (email or "").strip().lower()
+    credits = max(0, int(credits))
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u:
+            return None
+        delta = credits - u.credits
+        u.credits = credits
+        s.add(Transaction(email=email, ts=_now(), type="admin", amount=delta,
+                          balance=credits, descr=f"Admin set by {admin_email}", price=0.0))
+        return _user_dict(u)
 
 
 def get_user(email: str) -> Optional[Dict]:

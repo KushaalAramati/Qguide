@@ -20,6 +20,8 @@ services:
           property: connectionString
       - key: ALLOWED_ORIGINS
         sync: false            # set to https://<your-app>.vercel.app after frontend deploy
+      - key: ADMIN_EMAILS
+        sync: false            # comma-separated emails that get the in-app Admin panel
       - key: PYTHON_VERSION
         value: "3.12.10"
 

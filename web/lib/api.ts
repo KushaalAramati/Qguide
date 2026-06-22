@@ -38,6 +38,8 @@ export interface Account {
   credits: number;
   runs: number;
   created: string;
+  last_login?: string | null;
+  is_admin?: boolean;
   transactions: {
     ts: string;
     type: string;
@@ -62,6 +64,10 @@ export const api = {
   project: (id: string) => req(`/projects/${id}`),
   deleteProject: (id: string) => req(`/projects/${id}`, { method: "DELETE" }),
   run: (request: any) => req("/run", { method: "POST", body: JSON.stringify({ request }) }),
+  // Admin (requires the caller's email to be in ADMIN_EMAILS on the server)
+  adminUsers: () => req("/admin/users"),
+  adminSetCredits: (email: string, credits: number) =>
+    req("/admin/credits", { method: "POST", body: JSON.stringify({ email, credits }) }),
 };
 
 export { BASE };
