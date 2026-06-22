@@ -1,17 +1,25 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import dynamic from "next/dynamic";
 import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Pill, BarRow, scoreKind, riskKind } from "@/components/ui";
 import { OutcomePie, OutcomeBars, GuideRadar, CompareBars } from "@/components/Charts";
+import { DnaOverview } from "@/components/viz/DnaOverview";
 import { api } from "@/lib/api";
 import { downloadCsv } from "@/lib/csv";
+import { buildDnaWindow, cleanSeq, BASE_NAME } from "@/lib/dna";
+
+// 3D viewers are client-only (three.js touches window) -> load without SSR.
+const Loading3D = () => <div className="h-[420px] grid place-items-center text-muted bg-[#0e0a16] rounded-xl">Loading 3D viewer…</div>;
+const GuideRna3D = dynamic(() => import("@/components/viz/GuideRna3D").then((m) => m.GuideRna3D), { ssr: false, loading: Loading3D });
+const DnaHelix3D = dynamic(() => import("@/components/viz/DnaHelix3D").then((m) => m.DnaHelix3D), { ssr: false, loading: Loading3D });
 
 export default function ProjectPage() {
   return <Shell><Dashboard /></Shell>;
 }
 
-const TABS = ["Guide Rankings", "Best Guide Set", "Outcome", "Compare"];
+const TABS = ["Guide Rankings", "Best Guide Set", "Outcome", "Compare", "🧬 3D Visualizer"];
 
 function whyChosen(g: any): [string, boolean][] {
   return [
@@ -29,6 +37,8 @@ function Dashboard() {
   const [err, setErr] = useState("");
   const [sel, setSel] = useState("");
   const [tab, setTab] = useState(0);
+  const [selBase, setSelBase] = useState<number | null>(null);
+  const [hovBase, setHovBase] = useState<number | null>(null);
 
   useEffect(() => {
     setProj(null); setErr("");
@@ -46,6 +56,9 @@ function Dashboard() {
   const g = byId[sel] || guides[0];
   const opt = resp.optimized_set;
   const req = resp.request;
+  const fullSeq = cleanSeq(req.sequence);
+  const win = buildDnaWindow(fullSeq, g);
+  const activeBase = selBase ?? hovBase;   // for the base-detail panel
 
   const onMean = guides.reduce((s, x) => s + x.scores.on_target, 0) / guides.length;
   const offMean = guides.reduce((s, x) => s + x.off_target.risk_score, 0) / guides.length;
@@ -190,6 +203,82 @@ function Dashboard() {
         <div className="grid grid-cols-2 gap-4">
           <Card><CardTitle>Top guides compared</CardTitle><CompareBars guides={guides.slice(0, 6)} /></Card>
           <Card><CardTitle>Profile — {g.guide_id}</CardTitle><GuideRadar guide={g} /></Card>
+        </div>
+      )}
+
+      {tab === 4 && (
+        <div className="flex flex-col gap-4">
+          <Card>
+            <CardTitle>DNA sequence map</CardTitle>
+            <div className="text-xs text-muted mb-1">Click a guide marker to load it into the 3D viewers. + strand above the axis, − strand below.</div>
+            <DnaOverview seqLength={fullSeq.length} guides={guides} selectedId={sel}
+              onSelect={(gid) => { setSel(gid); setSelBase(null); }} />
+          </Card>
+
+          <div className="grid grid-cols-2 gap-4">
+            <Card>
+              <div className="flex justify-between items-center mb-1">
+                <CardTitle>Guide RNA 3D · {g.guide_id}</CardTitle>
+                <code className="text-xs bg-bg rounded px-1 text-brand-dark">{g.sequence}</code>
+              </div>
+              <GuideRna3D sequence={g.sequence} selected={selBase} onSelect={setSelBase} onHover={setHovBase} />
+              <div className="text-xs text-muted mt-1">Drag to rotate · scroll to zoom · click a base for details.</div>
+            </Card>
+            <Card>
+              <CardTitle>DNA double helix · binding region</CardTitle>
+              <DnaHelix3D win={win} onHover={() => {}} />
+              <div className="text-xs text-muted mt-1">Highlighted: protospacer (purple rungs) and PAM (gold). Window ±{(win.windowStart >= 0 ? 14 : 14)} bp.</div>
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <Card>
+              <CardTitle>Analytics · {g.guide_id}</CardTitle>
+              {[
+                ["Efficiency score", g.scores.on_target.toFixed(3)],
+                ["Specificity score", (1 - g.off_target.risk_score).toFixed(3)],
+                ["Off-target risk", `${(g.off_target.risk_score * 100).toFixed(0)}% (${g.off_target.risk_category})`],
+                ["GC content", `${(g.gc_content * 100).toFixed(0)}%`],
+                ["Secondary-structure penalty", g.scores.secondary_structure_penalty.toFixed(3)],
+                ["Target coordinates", `${g.position}–${g.end ?? g.position + g.sequence.length} (${typeof g.strand === "string" ? g.strand : g.strand?.value || "+"})`],
+                ["PAM", `${g.pam} (${req.cas_enzyme})`],
+              ].map(([k, v]) => (
+                <div key={k as string} className="flex justify-between py-1.5 border-b border-dashed border-border text-sm last:border-0">
+                  <span className="text-muted font-semibold">{k}</span><span className="font-bold">{v}</span>
+                </div>
+              ))}
+            </Card>
+
+            <Card>
+              <CardTitle>Base-level detail</CardTitle>
+              {activeBase != null && g.sequence[activeBase] ? (
+                <div className="text-sm">
+                  <div className="font-display font-extrabold text-3xl text-brand">{g.sequence[activeBase]}</div>
+                  <div className="mt-2 space-y-1">
+                    <div className="flex justify-between"><span className="text-muted">Base</span><b>{BASE_NAME[g.sequence[activeBase]] || "—"}</b></div>
+                    <div className="flex justify-between"><span className="text-muted">Type</span><b>{["A", "G"].includes(g.sequence[activeBase]) ? "Purine" : "Pyrimidine"}</b></div>
+                    <div className="flex justify-between"><span className="text-muted">Position in guide</span><b>{activeBase + 1} / {g.sequence.length}</b></div>
+                    <div className="flex justify-between"><span className="text-muted">Genomic index</span><b>{g.position + activeBase}</b></div>
+                  </div>
+                  {selBase != null && <button onClick={() => setSelBase(null)} className="btn-ghost text-xs mt-3">Clear selection</button>}
+                </div>
+              ) : (
+                <div className="text-sm text-muted">Hover or click a nucleotide in the 3D guide viewer to inspect it.</div>
+              )}
+            </Card>
+
+            <Card>
+              <CardTitle>Sequence details</CardTitle>
+              <div className="text-sm space-y-1">
+                <div className="flex justify-between"><span className="text-muted">Guide length</span><b>{g.sequence.length} nt</b></div>
+                <div className="flex justify-between"><span className="text-muted">Spacer (5'→3')</span></div>
+                <code className="text-xs bg-bg rounded px-1 text-brand-dark break-all block">{g.sequence}</code>
+                <div className="flex justify-between mt-1"><span className="text-muted">Binding window</span><b>{win.windowStart}–{win.windowStart + win.seq.length}</b></div>
+                <code className="text-[11px] bg-bg rounded px-1 break-all block">{win.seq}</code>
+                <div className="flex justify-between mt-1"><span className="text-muted">Final score</span><b className="text-brand">{g.final_score.toFixed(3)}</b></div>
+              </div>
+            </Card>
+          </div>
         </div>
       )}
     </div>
