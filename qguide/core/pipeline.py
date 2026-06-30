@@ -20,6 +20,7 @@ from qguide.app.schemas import (
 )
 from qguide.core import (
     context_adjustment,
+    ensemble,
     explainability,
     guide_generator,
     off_target,
@@ -68,6 +69,12 @@ def run_design(request: DesignRequest) -> DesignResponse:
 
     # Step 6 -- multi-objective final score (also sorts best-first)
     optimization.compute_final_scores(guides)
+
+    # Step 6b -- ensemble scoring layer: the spec's named components + goal-weighted
+    # final_qguide_score (additive; the legacy final_score still drives ordering for
+    # now). Switching the primary ranking to ensemble.final_qguide_score is a one-line
+    # change once the UI consumes it.
+    ensemble.score_guides(guides, request)
 
     # Step 7 -- optimization (backend: classical SA or D-Wave dimod, per request)
     optimizer = optimization.make_optimizer(getattr(request, "optimizer_backend", "sa"))
