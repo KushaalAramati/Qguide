@@ -64,6 +64,24 @@ export const api = {
   project: (id: string) => req(`/projects/${id}`),
   deleteProject: (id: string) => req(`/projects/${id}`, { method: "DELETE" }),
   run: (request: any) => req("/run", { method: "POST", body: JSON.stringify({ request }) }),
+  // Auth / account management
+  changePassword: (current_password: string, new_password: string) =>
+    req("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),
+  forgotPassword: (email: string) =>
+    req("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
+  resetPassword: (token: string, new_password: string) =>
+    req("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, new_password }) }),
+  updateProfile: (name: string) =>
+    req("/account/profile", { method: "PATCH", body: JSON.stringify({ name }) }),
+  // Folders / project organisation
+  folders: () => req("/folders"),
+  createFolder: (name: string, parent_id?: string | null) =>
+    req("/folders", { method: "POST", body: JSON.stringify({ name, parent_id: parent_id ?? null }) }),
+  renameFolder: (fid: string, name: string) =>
+    req(`/folders/${fid}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  deleteFolder: (fid: string) => req(`/folders/${fid}`, { method: "DELETE" }),
+  patchProject: (pid: string, patch: { name?: string; folder_id?: string | null; archived?: boolean }) =>
+    req(`/projects/${pid}`, { method: "PATCH", body: JSON.stringify(patch) }),
   // Admin (requires the caller's email to be in ADMIN_EMAILS on the server)
   adminUsers: () => req("/admin/users"),
   adminSetCredits: (email: string, credits: number) =>

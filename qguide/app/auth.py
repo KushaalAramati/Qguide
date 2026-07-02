@@ -30,3 +30,23 @@ def decode_token(token: str) -> Optional[str]:
         return payload.get("sub")
     except jwt.PyJWTError:
         return None
+
+
+RESET_TTL_SECONDS = 60 * 30  # 30 minutes
+
+
+def make_reset_token(email: str) -> str:
+    now = int(time.time())
+    payload = {"sub": email, "purpose": "reset", "iat": now, "exp": now + RESET_TTL_SECONDS}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGO)
+
+
+def decode_reset_token(token: str) -> Optional[str]:
+    """Return the email for a valid *reset* token, else None."""
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+        if payload.get("purpose") != "reset":
+            return None
+        return payload.get("sub")
+    except jwt.PyJWTError:
+        return None

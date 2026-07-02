@@ -38,6 +38,7 @@ class User(Base):
     credits = Column(Integer, nullable=False, default=0)
     runs = Column(Integer, nullable=False, default=0)
     counter = Column(Integer, nullable=False, default=0)
+    fcounter = Column(Integer, default=0)
     created = Column(String(32), nullable=False)
     last_login = Column(String(32))
 
@@ -66,6 +67,18 @@ class Project(Base):
     best_guide = Column(String(64))
     request_json = Column(Text, nullable=False)
     response_json = Column(Text, nullable=False)
+    folder_id = Column(String(32))          # nullable -> "unfiled"
+    archived = Column(Integer, default=0)   # 0 = active, 1 = archived (soft state)
+
+
+class Folder(Base):
+    __tablename__ = "folders"
+    email = Column(String(255), primary_key=True)
+    fid = Column(String(32), primary_key=True)
+    name = Column(String(255), nullable=False)
+    parent_fid = Column(String(32))         # nullable -> top level; supports subfolders
+    created = Column(String(32), nullable=False)
+    fcounter_placeholder = Column(Integer, default=0)
 
 
 def init_db() -> None:
@@ -77,7 +90,10 @@ def _migrate() -> None:
     """Best-effort additive migrations for DBs created before a column existed.
     Each ALTER runs in its own transaction; a 'duplicate column' error (column
     already present) is swallowed. Portable across SQLite and Postgres."""
-    for stmt in ["ALTER TABLE users ADD COLUMN last_login VARCHAR(32)"]:
+    for stmt in ["ALTER TABLE users ADD COLUMN last_login VARCHAR(32)",
+                 "ALTER TABLE projects ADD COLUMN folder_id VARCHAR(32)",
+                 "ALTER TABLE projects ADD COLUMN archived INTEGER DEFAULT 0",
+                 "ALTER TABLE users ADD COLUMN fcounter INTEGER DEFAULT 0"]:
         try:
             with engine.begin() as conn:
                 conn.execute(text(stmt))
@@ -280,13 +296,20 @@ def save_project(email: str, proj: Dict) -> None:
                           response_json=resp.model_dump_json()))
 
 
-def list_projects_meta(email: str) -> List[Dict]:
+def list_projects_meta(email: str, include_archived: bool = True) -> List[Dict]:
     email = (email or "").strip().lower()
     with session_scope() as s:
         rows = s.scalars(select(Project).where(Project.email == email)
                          .order_by(Project.pid.desc())).all()
-        return [{"id": p.pid, "name": p.name, "created": p.created, "elapsed": p.elapsed,
-                 "n_guides": p.n_guides, "best_guide": p.best_guide} for p in rows]
+        out = []
+        for p in rows:
+            arch = bool(getattr(p, "archived", 0) or 0)
+            if arch and not include_archived:
+                continue
+            out.append({"id": p.pid, "name": p.name, "created": p.created, "elapsed": p.elapsed,
+                        "n_guides": p.n_guides, "best_guide": p.best_guide,
+                        "folder_id": getattr(p, "folder_id", None), "archived": arch})
+        return out
 
 
 def _reconstruct(p: Project) -> Dict:
@@ -329,3 +352,140 @@ def load_account(email: str) -> Optional[Dict]:
             except Exception:
                 continue
     return summary
+
+
+# --------------------------------------------------------------------------- #
+# Password management (change / reset)                                          #
+# --------------------------------------------------------------------------- #
+def change_password(email: str, current: str, new: str) -> Tuple[bool, str]:
+    email = (email or "").strip().lower()
+    if not new or len(new) < 6:
+        return False, "New password must be at least 6 characters."
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u:
+            return False, "no_user"
+        if not _check_pw(current, u.pw_salt, u.pw_hash):
+            return False, "bad_password"
+        salt, h = _make_pw(new)
+        u.pw_salt, u.pw_hash = salt, h
+    return True, "ok"
+
+
+def reset_password(email: str, new: str) -> Tuple[bool, str]:
+    """Set a new password without the old one (used by a verified reset token)."""
+    email = (email or "").strip().lower()
+    if not new or len(new) < 6:
+        return False, "New password must be at least 6 characters."
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u:
+            return False, "no_user"
+        salt, h = _make_pw(new)
+        u.pw_salt, u.pw_hash = salt, h
+    return True, "ok"
+
+
+def user_exists(email: str) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        return s.get(User, email) is not None
+
+
+def update_profile(email: str, name: Optional[str] = None) -> Optional[Dict]:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u:
+            return None
+        if name is not None and name.strip():
+            u.name = name.strip()
+        return _user_dict(u)
+
+
+# --------------------------------------------------------------------------- #
+# Folders + project organisation                                               #
+# --------------------------------------------------------------------------- #
+def next_fid(email: str) -> str:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        u = s.get(User, email)
+        u.fcounter = (getattr(u, "fcounter", 0) or 0) + 1
+        return f"F{u.fcounter:03d}"
+
+
+def list_folders(email: str) -> List[Dict]:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        rows = s.scalars(select(Folder).where(Folder.email == email)
+                         .order_by(Folder.fid)).all()
+        return [{"id": f.fid, "name": f.name, "parent_id": f.parent_fid,
+                 "created": f.created} for f in rows]
+
+
+def create_folder(email: str, name: str, parent_id: Optional[str] = None) -> Dict:
+    email = (email or "").strip().lower()
+    fid = next_fid(email)
+    with session_scope() as s:
+        s.add(Folder(email=email, fid=fid, name=(name or "New folder").strip(),
+                     parent_fid=parent_id, created=_now()))
+    return {"id": fid, "name": (name or "New folder").strip(), "parent_id": parent_id}
+
+
+def rename_folder(email: str, fid: str, name: str) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        f = s.get(Folder, {"email": email, "fid": fid})
+        if not f:
+            return False
+        f.name = (name or f.name).strip()
+        return True
+
+
+def delete_folder(email: str, fid: str) -> bool:
+    """Delete a folder; its projects and subfolders are moved to the parent (unfiled
+    if top-level). Non-destructive to scientific work."""
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        f = s.get(Folder, {"email": email, "fid": fid})
+        if not f:
+            return False
+        parent = f.parent_fid
+        for sub in s.scalars(select(Folder).where(Folder.email == email,
+                                                   Folder.parent_fid == fid)).all():
+            sub.parent_fid = parent
+        for p in s.scalars(select(Project).where(Project.email == email,
+                                                 Project.folder_id == fid)).all():
+            p.folder_id = parent
+        s.delete(f)
+        return True
+
+
+def move_project(email: str, pid: str, folder_id: Optional[str]) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        p = s.get(Project, {"email": email, "pid": pid})
+        if not p:
+            return False
+        p.folder_id = folder_id or None
+        return True
+
+
+def rename_project(email: str, pid: str, name: str) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        p = s.get(Project, {"email": email, "pid": pid})
+        if not p:
+            return False
+        p.name = (name or p.name).strip()
+        return True
+
+
+def set_archived(email: str, pid: str, archived: bool) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        p = s.get(Project, {"email": email, "pid": pid})
+        if not p:
+            return False
+        p.archived = 1 if archived else 0
+        return True

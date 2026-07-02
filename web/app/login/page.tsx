@@ -88,6 +88,7 @@ export default function LoginPage() {
                 onChange={(e) => { setPw(e.target.value); setPwErr(false); }}
                 onKeyDown={(e) => e.key === "Enter" && submit()} />
               {err && <div className="text-bad text-sm font-semibold mt-1.5">⚠ {err}</div>}
+              {tab === "in" && <div className="text-right mt-1.5"><a href="/forgot" className="text-xs text-brand font-semibold">Forgot password?</a></div>}
             </div>
             <Button onClick={submit} disabled={busy} full>
               {busy ? "Please wait…" : tab === "in" ? "Sign in" : "Create account (+25 credits)"}

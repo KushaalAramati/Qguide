@@ -209,6 +209,66 @@ def me(email: str = Depends(current_email)) -> Dict[str, object]:
     return _account(email)
 
 
+class ChangePwBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/auth/change-password")
+def change_password(body: ChangePwBody, email: str = Depends(current_email)) -> Dict[str, object]:
+    ok, reason = store.change_password(email, body.current_password, body.new_password)
+    if not ok:
+        if reason == "bad_password":
+            raise HTTPException(status_code=401, detail="Current password is incorrect.")
+        raise HTTPException(status_code=400, detail=reason)
+    return {"ok": True}
+
+
+class ForgotBody(BaseModel):
+    email: EmailStr
+
+
+@router.post("/auth/forgot-password")
+def forgot_password(body: ForgotBody) -> Dict[str, object]:
+    """DEV MODE: no email provider is configured, so the reset token is returned in
+    the response (clearly labelled). In production this token would be emailed and
+    NEVER returned to the client."""
+    email = body.email.strip().lower()
+    exists = store.user_exists(email)
+    token = auth.make_reset_token(email) if exists else None
+    # Always return 200 (do not leak which emails exist).
+    return {"ok": True, "dev_mode": True,
+            "message": "Reset link generated. (Dev mode: no email is sent — token returned below.)",
+            "reset_token": token}
+
+
+class ResetBody(BaseModel):
+    token: str
+    new_password: str
+
+
+@router.post("/auth/reset-password")
+def reset_password(body: ResetBody) -> Dict[str, object]:
+    email = auth.decode_reset_token(body.token)
+    if not email:
+        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+    ok, reason = store.reset_password(email, body.new_password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=reason)
+    return {"ok": True, "token": auth.make_token(email), "account": _account(email)}
+
+
+class ProfileBody(BaseModel):
+    name: str
+
+
+@router.patch("/account/profile")
+def update_profile(body: ProfileBody, email: str = Depends(current_email)) -> Dict[str, object]:
+    if store.update_profile(email, body.name) is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return _account(email)
+
+
 # --------------------------------------------------------------------------- #
 # Billing / credits                                                           #
 # --------------------------------------------------------------------------- #
@@ -275,6 +335,59 @@ def get_project(pid: str, email: str = Depends(current_email)) -> Dict[str, obje
 @router.delete("/projects/{pid}")
 def remove_project(pid: str, email: str = Depends(current_email)) -> Dict[str, bool]:
     return {"deleted": store.delete_project(email, pid)}
+
+
+class ProjectPatch(BaseModel):
+    name: Optional[str] = None
+    folder_id: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+@router.patch("/projects/{pid}")
+def patch_project(pid: str, body: ProjectPatch, email: str = Depends(current_email)) -> Dict[str, bool]:
+    done = False
+    if body.name is not None:
+        done = store.rename_project(email, pid, body.name) or done
+    if body.folder_id is not None or (body.folder_id is None and "folder_id" in body.model_fields_set):
+        done = store.move_project(email, pid, body.folder_id) or done
+    if body.archived is not None:
+        done = store.set_archived(email, pid, body.archived) or done
+    if not done:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    return {"ok": True}
+
+
+@router.get("/folders")
+def list_folders(email: str = Depends(current_email)) -> List[Dict[str, object]]:
+    return store.list_folders(email)
+
+
+class FolderBody(BaseModel):
+    name: str
+    parent_id: Optional[str] = None
+
+
+@router.post("/folders")
+def create_folder(body: FolderBody, email: str = Depends(current_email)) -> Dict[str, object]:
+    return store.create_folder(email, body.name, body.parent_id)
+
+
+class FolderRenameBody(BaseModel):
+    name: str
+
+
+@router.patch("/folders/{fid}")
+def rename_folder(fid: str, body: FolderRenameBody, email: str = Depends(current_email)) -> Dict[str, bool]:
+    if not store.rename_folder(email, fid, body.name):
+        raise HTTPException(status_code=404, detail="Folder not found.")
+    return {"ok": True}
+
+
+@router.delete("/folders/{fid}")
+def delete_folder(fid: str, email: str = Depends(current_email)) -> Dict[str, bool]:
+    if not store.delete_folder(email, fid):
+        raise HTTPException(status_code=404, detail="Folder not found.")
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------- #
