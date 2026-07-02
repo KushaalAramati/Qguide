@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
+import Link from "next/link";
 import dynamic from "next/dynamic";
 import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Pill, BarRow, scoreKind, riskKind } from "@/components/ui";
@@ -214,6 +215,15 @@ function Dashboard() {
 
       {tab === 4 && (
         <div className="flex flex-col gap-4">
+          <Link href={`/project/${id}/visualize`}
+            className="rounded-xl border border-brand/30 bg-gradient-to-r from-brand/10 to-transparent p-4 flex items-center justify-between hover:from-brand/20 transition">
+            <div>
+              <div className="font-display font-extrabold text-lg text-brand">▶ Open the 3D Visualization Studio</div>
+              <div className="text-sm text-muted">Watch an animated CRISPR–Cas9 simulation for {g.guide_id} — scan → PAM → R-loop → cleavage → double-strand break — plus the full-size 3D viewers.</div>
+            </div>
+            <span className="text-brand font-bold text-sm whitespace-nowrap">Open studio →</span>
+          </Link>
+
           <Card>
             <CardTitle>DNA sequence map</CardTitle>
             <div className="text-xs text-muted mb-1">Click a guide marker to load it into the 3D viewers. + strand above the axis, − strand below.</div>
