@@ -58,6 +58,8 @@ function NewForm() {
   const [delivery, setDelivery] = useState("");
   const [temp, setTemp] = useState(37);
   const [setSize, setSetSize] = useState(3);
+  const [risk, setRisk] = useState("balanced");
+  const [optMode, setOptMode] = useState("classical");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -73,7 +75,7 @@ function NewForm() {
       const res = await api.run({
         sequence: seq, gene_name: gene || null, cas_enzyme: cas, organism,
         desired_outcome: outcome, cell_type: cell || null, delivery_method: delivery || null,
-        temperature: temp, set_size: setSize,
+        temperature: temp, set_size: setSize, risk_tolerance: risk, optimizer_mode: optMode,
       });
       await refresh();
       router.push(`/project/${res.project_id}`);
@@ -116,7 +118,7 @@ function NewForm() {
             <Row>
               <div><div className="label mb-1">Desired outcome</div>
                 <select className="input" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
-                  {["knockout", "gene_disruption", "exon_targeting", "deletion", "custom"].map((x) => <option key={x}>{x}</option>)}</select></div>
+                  {["knockout", "precise_edit", "base_edit", "prime_edit", "crispri", "crispra", "screen", "gene_disruption", "exon_targeting", "deletion", "custom"].map((x) => <option key={x}>{x}</option>)}</select></div>
               <div><div className="label mb-1">Cell type (optional)</div>
                 <select className="input" value={cell} onChange={(e) => setCell(e.target.value)}>
                   {["", "stem_cell", "neuron", "hek293", "primary_t", "cancer_line"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}</select></div>
@@ -134,6 +136,20 @@ function NewForm() {
             <CardTitle>🎯 Optimization Settings</CardTitle>
             <div className="label mb-1">Optimized set size (N): {setSize}</div>
             <input type="range" min={1} max={6} value={setSize} onChange={(e) => setSetSize(parseInt(e.target.value))} className="w-full accent-brand" />
+            <div className="grid grid-cols-2 gap-3 mt-3">
+              <div><div className="label mb-1">Risk tolerance</div>
+                <select className="input" value={risk} onChange={(e) => setRisk(e.target.value)}>
+                  {["low", "balanced", "high"].map((x) => <option key={x}>{x}</option>)}</select></div>
+              <div><div className="label mb-1">Optimizer</div>
+                <select className="input" value={optMode} onChange={(e) => setOptMode(e.target.value)}>
+                  <option value="classical">Classical (annealing)</option>
+                  <option value="quantum_inspired">Quantum-inspired (QUBO)</option>
+                  <option value="quantum_hardware">Quantum hardware (experimental)</option>
+                </select></div>
+            </div>
+            <div className="text-xs text-muted mt-2">Quantum-inspired optimization searches guide
+              combinations. Biological scoring stays classical bioinformatics/ML — quantum does
+              not change prediction accuracy.</div>
           </Card>
         </div>
 

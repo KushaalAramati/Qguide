@@ -6,6 +6,7 @@ import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Pill, BarRow, scoreKind, riskKind } from "@/components/ui";
 import { OutcomePie, OutcomeBars, GuideRadar, CompareBars } from "@/components/Charts";
 import { DnaOverview } from "@/components/viz/DnaOverview";
+import { EnsembleBadges, EnsemblePanel, OffTargetHits, OptimizerComparison } from "@/components/Ensemble";
 import { api } from "@/lib/api";
 import { downloadCsv } from "@/lib/csv";
 import { buildDnaWindow, cleanSeq, BASE_NAME } from "@/lib/dna";
@@ -124,10 +125,11 @@ function Dashboard() {
             <div className="label mt-2">Sequence (5'→3')</div>
             <code className="text-sm bg-bg rounded px-1 text-brand-dark break-all">{g.sequence}</code>
             <div className="flex gap-4 mt-3 flex-wrap">
-              {[["PAM", g.pam], ["Strand", strand(g)], ["Pos", g.position], ["GC", `${(g.gc_content * 100).toFixed(0)}%`], ["Total", g.final_score.toFixed(3)]].map(([k, v]) => (
-                <div key={k as string}><div className="label">{k}</div><b className={k === "Total" ? "text-brand" : ""}>{v}</b></div>
+              {[["PAM", g.pam], ["Strand", strand(g)], ["Pos", g.position], ["GC", `${(g.gc_content * 100).toFixed(0)}%`], ["QGuide", g.ensemble?.final_qguide_score?.toFixed(3) ?? "—"]].map(([k, v]) => (
+                <div key={k as string}><div className="label">{k}</div><b className={k === "QGuide" ? "text-brand" : ""}>{v}</b></div>
               ))}
             </div>
+            <div className="mt-3"><EnsembleBadges e={g.ensemble} /></div>
           </Card>
           <Card>
             <CardTitle>Score breakdown</CardTitle>
@@ -148,6 +150,7 @@ function Dashboard() {
             ))}
           </Card>
         </div>
+        <Card className="mt-4"><EnsemblePanel e={g.ensemble} /></Card>
       </div>
 
       {/* Tabs */}
@@ -183,18 +186,21 @@ function Dashboard() {
       )}
 
       {tab === 1 && (
-        <Card>
-          <CardTitle>Optimized set: {opt.selected_guide_ids.join(", ")}</CardTitle>
-          <div className="text-xs text-muted mb-2">method {opt.method} · objective {opt.objective_value}</div>
-          {opt.tradeoffs?.map((t: string, i: number) => <div key={i} className="text-sm text-muted">• {t}</div>)}
-          <div className="mt-3"><CompareBars guides={chosen} /></div>
-        </Card>
+        <div className="flex flex-col gap-4">
+          <Card><OptimizerComparison opt={opt} /></Card>
+          <Card>
+            <CardTitle>Optimized set: {opt.selected_guide_ids.join(", ")}</CardTitle>
+            {opt.tradeoffs?.map((t: string, i: number) => <div key={i} className="text-sm text-muted">• {t}</div>)}
+            <div className="mt-3"><CompareBars guides={chosen} /></div>
+          </Card>
+        </div>
       )}
 
       {tab === 2 && (
         <div className="grid grid-cols-2 gap-4">
           <Card><CardTitle>Predicted edit outcome — {g.guide_id}</CardTitle><OutcomePie outcome={g.outcome} /></Card>
           <Card><CardTitle>Outcome probabilities</CardTitle><OutcomeBars outcome={g.outcome} /></Card>
+          <Card className="col-span-2"><OffTargetHits report={g.off_target} /></Card>
           <Card className="col-span-2"><CardTitle>Why {g.guide_id} ranks here</CardTitle><div className="text-sm">{g.explanation}</div></Card>
         </div>
       )}
