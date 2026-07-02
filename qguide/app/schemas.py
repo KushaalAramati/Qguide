@@ -238,6 +238,7 @@ class DesignRequest(BaseModel):
     selection_mode: str = "set"                # "individual" | "set"
     optimizer_mode: str = "classical"          # classical | quantum_inspired | quantum_hardware
     optimizer_backend: str = "sa"              # legacy: "sa" | "dwave"
+    optimizer_preset: str = "balanced"         # QUBO weight preset (see optimization.PRESETS)
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -255,6 +256,15 @@ class OptimizationResult(BaseModel):
     expected_outcome_delta: float = 0.0        # optimized mean score - top-N mean score
     off_target_delta: float = 0.0              # optimized mean risk - top-N mean risk
     comparison_note: str = ""
+    # QUBO configuration + aggregate set metrics (Feature 2)
+    preset: str = "balanced"
+    weights: Dict[str, float] = Field(default_factory=dict)
+    set_expected_outcome: float = 0.0          # mean quality_i of the set (0..1)
+    set_off_target_burden: float = 0.0         # mean off-target risk of the set
+    set_diversity: float = 0.0                 # 1 - mean pairwise redundancy
+    set_uncertainty: float = 0.0               # mean ensemble uncertainty
+    quality_by_guide: Dict[str, float] = Field(default_factory=dict)
+    risk_by_guide: Dict[str, float] = Field(default_factory=dict)
 
 
 class DesignResponse(BaseModel):

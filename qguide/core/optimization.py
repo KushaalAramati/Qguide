@@ -12,29 +12,29 @@ Quantum-inspired optimization (Step 7)
 --------------------------------------
 Selecting the best N-guide *set* is framed as a QUBO:
 
-    minimise   x^T Q x
+    minimise   E(x) = - sum_i quality_i x_i           (reward good guides)
+                       + sum_i risk_i x_i               (penalise risky guides)
+                       + sum_ij redundancy_ij x_i x_j   (penalise redundant pairs)
+                       + lambda * (sum_i x_i - N)^2      (pick exactly N)
+
     where x_i in {0,1} marks whether guide i is selected.
 
-The Q matrix encodes:
-  * linear terms  -> reward each guide's utility (negative on the diagonal)
-  * quadratic terms -> penalise redundancy: overlapping / nearby / sequence-similar
-                       guide pairs, and over/under-selection vs the target set size.
-
-V1 solves the QUBO with **simulated annealing** (a classical stand-in for quantum
-annealing). The `Optimizer` interface means a `DWaveOptimizer`, `QAOAOptimizer`
-(Qiskit), or `BraketOptimizer` can be dropped in later -- they consume the same Q
-matrix and return the same selection.
+SCIENTIFIC HONESTY: the per-guide *biological* scores (quality_i, risk_i) come from
+classical bioinformatics / ML heuristics upstream. The QUBO / annealer only SEARCHES
+the combination space -- it does not predict biology. All weights are configurable and
+seven named presets are provided. The three solver modes (classical / quantum_inspired /
+quantum_hardware) all consume the SAME QUBO.
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional, Protocol, Tuple
 
 from qguide.app.schemas import Guide, OptimizationResult
 
 # --------------------------------------------------------------------------- #
-# Step 6 -- Multi-objective per-guide utility                                   #
+# Step 6 -- Multi-objective per-guide utility (unchanged; used for ranking)     #
 # --------------------------------------------------------------------------- #
 FINAL_WEIGHTS = {
     # positive
@@ -52,10 +52,8 @@ FINAL_WEIGHTS = {
 
 def compute_final_score(guide: Guide) -> Tuple[float, Dict[str, float]]:
     """Return (final_score in 0..1, contribution breakdown)."""
-    # GC imbalance penalty, tuned by the organism's GC tolerance (gc_multiplier<1
-    # => more tolerant of skewed GC, e.g. AT-rich genomes).
     gc_balance_pen = min(1.0, (abs(guide.gc_content - 0.5) / 0.5) * guide.context.gc_multiplier)
-    context_compat = min(1.0, guide.context.multiplier)     # >1 clipped to 1 for the term
+    context_compat = min(1.0, guide.context.multiplier)
 
     contributions = {
         "on_target": FINAL_WEIGHTS["on_target"] * guide.scores.on_target,
@@ -68,17 +66,12 @@ def compute_final_score(guide: Guide) -> Tuple[float, Dict[str, float]]:
         "gc_balance": FINAL_WEIGHTS["gc_balance"] * gc_balance_pen,
     }
     raw = sum(contributions.values())
-    # NB: the context efficiency factor is already baked into the outcome
-    # probabilities (knockout/functional) upstream, so we do NOT re-multiply here
-    # -- that would double-count context. The small `context` term above remains as
-    # an explicit compatibility signal.
     pos_mass = sum(w for w in FINAL_WEIGHTS.values() if w > 0)
     final = max(0.0, min(1.0, raw / pos_mass))
     return round(final, 4), {k: round(v, 4) for k, v in contributions.items()}
 
 
 def _confidence(guide: Guide) -> float:
-    """Confidence shrinks when penalties / off-target risk / no-edit are high."""
     penalty = (
         guide.off_target.risk_score
         + guide.scores.secondary_structure_penalty
@@ -94,6 +87,113 @@ def compute_final_scores(guides: List[Guide]) -> List[Guide]:
         g.confidence = _confidence(g)
     guides.sort(key=lambda g: g.final_score, reverse=True)
     return guides
+
+
+# --------------------------------------------------------------------------- #
+# QUBO weights + presets                                                        #
+# --------------------------------------------------------------------------- #
+@dataclass
+class QuboWeights:
+    """Every QUBO term weight, fully configurable. Presets below tune these."""
+    # --- quality_i sub-weights (reward) ---
+    q_on_target: float = 1.0
+    q_desired_outcome: float = 1.0
+    q_knockout: float = 1.0
+    q_specificity: float = 0.9
+    q_repair: float = 0.7
+    q_functional: float = 0.7
+    q_model_agreement: float = 0.5
+    # --- risk_i sub-weights (penalty) ---
+    r_off_target: float = 1.2
+    r_uncertainty: float = 0.8
+    r_context_risk: float = 0.4
+    # --- redundancy_ij sub-weights (pairwise penalty) ---
+    d_position: float = 0.5
+    d_sequence: float = 0.3
+    d_cut_proximity: float = 0.2
+    d_shared_offtarget: float = 0.3
+    # --- top-level scales ---
+    quality_scale: float = 1.0
+    risk_scale: float = 1.0
+    redundancy_penalty: float = 0.8
+    diversity_bonus: float = 0.0      # reward selecting diverse (low-redundancy) pairs
+    cardinality_penalty: float = 1.5  # lambda on (sum x - N)^2
+
+
+# Seven named presets (the product brief's optimization profiles).
+PRESETS: Dict[str, QuboWeights] = {
+    "balanced": QuboWeights(),
+    "max_knockout": QuboWeights(
+        q_knockout=1.6, q_functional=1.1, q_desired_outcome=1.3,
+        q_specificity=0.6, r_off_target=1.0),
+    "max_specificity": QuboWeights(
+        q_specificity=1.6, r_off_target=1.8, q_on_target=1.1,
+        d_shared_offtarget=0.6),
+    "min_uncertainty": QuboWeights(
+        r_uncertainty=1.8, q_model_agreement=1.1, q_specificity=1.0,
+        r_off_target=1.1),
+    "broad_coverage": QuboWeights(
+        redundancy_penalty=1.6, diversity_bonus=0.5, d_position=0.7,
+        d_cut_proximity=0.4),
+    "therapeutic_safety": QuboWeights(
+        r_off_target=2.0, r_uncertainty=1.4, q_specificity=1.4,
+        d_shared_offtarget=0.6, cardinality_penalty=1.8),
+    "screening_library": QuboWeights(
+        q_model_agreement=1.2, redundancy_penalty=1.3, diversity_bonus=0.4,
+        q_on_target=1.2, r_uncertainty=1.0),
+}
+
+PRESET_INFO: Dict[str, str] = {
+    "balanced": "Even weighting across activity, specificity, outcome and diversity.",
+    "max_knockout": "Maximise predicted knockout / functional disruption probability.",
+    "max_specificity": "Prioritise specificity and heavily penalise off-target risk.",
+    "min_uncertainty": "Prefer high-confidence guides; penalise uncertainty, reward model agreement.",
+    "broad_coverage": "Spread guides across the target region (reward diversity, penalise redundancy).",
+    "therapeutic_safety": "Conservative safety-first profile: strong off-target + uncertainty penalties.",
+    "screening_library": "Screening libraries: consistency, model agreement and broad coverage.",
+}
+
+DEFAULT_WEIGHTS = PRESETS["balanced"]
+
+
+def get_weights(preset: str) -> QuboWeights:
+    return PRESETS.get(preset, DEFAULT_WEIGHTS)
+
+
+# --------------------------------------------------------------------------- #
+# Per-guide quality_i / risk_i (from the already-computed biological scores)     #
+# --------------------------------------------------------------------------- #
+def quality_i(g: Guide, w: QuboWeights) -> float:
+    """Reward term: weighted blend of the positive biological signals (0..1)."""
+    e = g.ensemble
+    on_t = e.on_target_score if e else g.scores.on_target
+    desired = e.desired_outcome_score if e else 0.0
+    spec = e.specificity_score if e else max(0.0, 1.0 - g.off_target.risk_score)
+    repair = e.repair_outcome_score if e else 0.0
+    agree = e.model_agreement_score if e else 0.0
+    terms = (
+        w.q_on_target * on_t
+        + w.q_desired_outcome * desired
+        + w.q_knockout * g.outcome.knockout_prob
+        + w.q_specificity * spec
+        + w.q_repair * repair
+        + w.q_functional * g.outcome.functional_disruption_score
+        + w.q_model_agreement * agree
+    )
+    mass = (w.q_on_target + w.q_desired_outcome + w.q_knockout + w.q_specificity
+            + w.q_repair + w.q_functional + w.q_model_agreement)
+    return max(0.0, min(1.0, terms / max(mass, 1e-9)))
+
+
+def risk_i(g: Guide, w: QuboWeights) -> float:
+    """Penalty term: weighted blend of off-target risk, uncertainty, risky context (0..1)."""
+    e = g.ensemble
+    off = g.off_target.risk_score
+    unc = e.uncertainty_score if e else 0.0
+    ctx_risk = max(0.0, 1.0 - min(1.0, g.context.multiplier))
+    terms = w.r_off_target * off + w.r_uncertainty * unc + w.r_context_risk * ctx_risk
+    mass = w.r_off_target + w.r_uncertainty + w.r_context_risk
+    return max(0.0, min(1.0, terms / max(mass, 1e-9)))
 
 
 # --------------------------------------------------------------------------- #
@@ -113,64 +213,79 @@ class QUBO:
         return e
 
     def to_qubo_dict(self) -> Dict[Tuple[str, str], float]:
-        """Export as the canonical {(var_i, var_j): bias} mapping that quantum /
-        annealing SDKs consume directly -- e.g.
-        `dimod.BinaryQuadraticModel.from_qubo(qubo.to_qubo_dict())` (D-Wave),
-        Qiskit's `QuadraticProgram`, or Amazon Braket. Variables are labelled by
-        guide_id so a returned bitstring maps straight back to guides.
-
-        This is the dependency-free seam for the quantum integration plan
-        (see docs/QUANTUM_INTEGRATION.md): no quantum package is needed to produce
-        it, and no Q-Guide code changes when a quantum `Optimizer` consumes it.
-        """
+        """Export as the labelled {(var_i, var_j): bias} mapping quantum / annealing
+        SDKs consume directly (dimod / Qiskit / Braket). Dependency-free seam."""
         ids = self.guide_ids
         return {(ids[i], ids[j]): coeff
                 for (i, j), coeff in self.linear_quadratic.items()}
 
 
 def _similarity(a: Guide, b: Guide) -> float:
-    """Redundancy proxy: positional overlap + spacer Hamming similarity."""
-    # positional overlap
+    """Base redundancy proxy: positional overlap + spacer Hamming + cut proximity."""
     overlap = max(0, min(a.end, b.end) - max(a.position, b.position))
     span = max(a.end - a.position, 1)
     pos_sim = overlap / span
-    # sequence similarity (only if equal length)
     seq_sim = 0.0
     if len(a.sequence) == len(b.sequence) and a.sequence:
         same = sum(1 for x, y in zip(a.sequence, b.sequence) if x == y)
         seq_sim = same / len(a.sequence)
-    # nearby cut sites are redundant for coverage
     near = 1.0 if abs(a.cut_site - b.cut_site) < 10 else 0.0
     return min(1.0, 0.5 * pos_sim + 0.3 * seq_sim + 0.2 * near)
+
+
+def _shared_offtarget(a: Guide, b: Guide) -> float:
+    """Jaccard overlap of the two guides' predicted off-target annotation classes.
+
+    Heuristic proxy for 'shared failure modes' (real shared-locus overlap needs a
+    genome index). Uses the annotation labels on each guide's predicted hits.
+    """
+    aa = {h.annotation for h in getattr(a.off_target, "hits", []) if getattr(h, "annotation", None)}
+    bb = {h.annotation for h in getattr(b.off_target, "hits", []) if getattr(h, "annotation", None)}
+    if not aa or not bb:
+        return 0.0
+    return len(aa & bb) / len(aa | bb)
+
+
+def redundancy_ij(a: Guide, b: Guide, w: QuboWeights) -> float:
+    """Full pairwise redundancy: position, sequence, cut proximity, shared off-targets."""
+    overlap = max(0, min(a.end, b.end) - max(a.position, b.position))
+    span = max(a.end - a.position, 1)
+    pos_sim = overlap / span
+    seq_sim = 0.0
+    if len(a.sequence) == len(b.sequence) and a.sequence:
+        seq_sim = sum(1 for x, y in zip(a.sequence, b.sequence) if x == y) / len(a.sequence)
+    near = 1.0 if abs(a.cut_site - b.cut_site) < 10 else 0.0
+    shared = _shared_offtarget(a, b)
+    val = (w.d_position * pos_sim + w.d_sequence * seq_sim
+           + w.d_cut_proximity * near + w.d_shared_offtarget * shared)
+    mass = w.d_position + w.d_sequence + w.d_cut_proximity + w.d_shared_offtarget
+    return max(0.0, min(1.0, val / max(mass, 1e-9)))
 
 
 def build_qubo(
     guides: List[Guide],
     set_size: int,
-    reward_scale: float = 1.0,
-    redundancy_penalty: float = 0.8,
-    cardinality_penalty: float = 1.5,
+    weights: Optional[QuboWeights] = None,
 ) -> QUBO:
-    """Construct a QUBO whose minimum-energy bitstring is the best guide set.
+    """Construct the QUBO whose minimum-energy bitstring is the best guide set.
 
-    Diagonal (linear) terms reward utility *and* encode the cardinality constraint
-    (penalise deviating from `set_size` selections). Off-diagonal terms penalise
-    selecting redundant pairs.
+    Diagonal terms: -quality_i (reward) + risk_i (penalty) + cardinality diagonal.
+    Off-diagonal terms: redundancy_ij (penalty) - diversity reward + cardinality.
     """
+    w = weights or DEFAULT_WEIGHTS
     n = len(guides)
     Q: Dict[Tuple[int, int], float] = {}
-
-    # Cardinality constraint  P * (sum x_i - k)^2  expands to:
-    #   P * x_i*(1 - 2k)   on the diagonal   +   2P * x_i x_j  off-diagonal
-    P = cardinality_penalty
+    P = w.cardinality_penalty
     k = set_size
     for i in range(n):
-        # linear: reward (negative -> lowers energy) + cardinality diagonal
-        reward = -reward_scale * guides[i].final_score
-        Q[(i, i)] = reward + P * (1 - 2 * k)
+        qi = quality_i(guides[i], w)
+        ri = risk_i(guides[i], w)
+        # reward (negative -> lowers energy) + risk penalty + cardinality diagonal
+        Q[(i, i)] = (-w.quality_scale * qi) + (w.risk_scale * ri) + P * (1 - 2 * k)
         for j in range(i + 1, n):
-            sim = _similarity(guides[i], guides[j])
-            Q[(i, j)] = redundancy_penalty * sim + 2 * P
+            red = redundancy_ij(guides[i], guides[j], w)
+            pair = w.redundancy_penalty * red - w.diversity_bonus * (1.0 - red)
+            Q[(i, j)] = pair + 2 * P
 
     return QUBO(linear_quadratic=Q, guide_ids=[g.guide_id for g in guides], set_size=set_size)
 
@@ -184,11 +299,7 @@ class Optimizer(Protocol):
 
 
 class SimulatedAnnealingOptimizer:
-    """Deterministic simulated annealing over the QUBO bitstring.
-
-    Determinism (seeded LCG) keeps tests reproducible; quality is fine for the
-    tens-to-hundreds of candidate guides a single locus produces.
-    """
+    """Deterministic simulated annealing over the QUBO bitstring."""
 
     method = "simulated_annealing_v1"
 
@@ -210,7 +321,6 @@ class SimulatedAnnealingOptimizer:
             return [], 0.0, 0
         rng = self._rng()
 
-        # Greedy warm start: top-k by final reward heuristic from the diagonal.
         diag = sorted(range(n), key=lambda i: qubo.linear_quadratic.get((i, i), 0.0))
         x = [0] * n
         for i in diag[:qubo.set_size]:
@@ -237,18 +347,7 @@ class SimulatedAnnealingOptimizer:
 
 
 class DimodQUBOOptimizer:
-    """Quantum-annealing-style optimizer via D-Wave's `dimod` data model.
-
-    Consumes the QUBO through `QUBO.to_qubo_dict()` and samples it with
-    `dwave.samplers.SimulatedAnnealingSampler` (the real Ocean software stack on a
-    classical sampler). Moving to *actual* quantum hardware is a one-line sampler
-    swap -- `EmbeddingComposite(DWaveSampler(token=...))` -- with no other change,
-    because the QUBO and the returned bitstring are identical.
-
-    See docs/QUANTUM_INTEGRATION.md. Requires `dimod` + `dwave-samplers`; if they
-    are not installed, `quantum_available()` returns False and the UI/factory falls
-    back to classical simulated annealing.
-    """
+    """Quantum-annealing-style optimizer via D-Wave's `dimod` data model."""
 
     method = "dwave_dimod_neal_v1"
 
@@ -274,13 +373,12 @@ class DimodQUBOOptimizer:
             sampler = SimulatedAnnealingSampler()
             sampleset = sampler.sample(bqm, num_reads=self.num_reads)
 
-        best = sampleset.first.sample                       # {guide_id: 0/1}
+        best = sampleset.first.sample
         x = [int(best[gid]) for gid in qubo.guide_ids]
         return x, float(sampleset.first.energy), self.num_reads
 
 
 def quantum_available() -> bool:
-    """True iff the D-Wave (dimod) optimizer can be constructed."""
     try:
         import dimod  # noqa: F401
         from dwave.samplers import SimulatedAnnealingSampler  # noqa: F401
@@ -289,7 +387,6 @@ def quantum_available() -> bool:
         return False
 
 
-# Backend registry consumed by the pipeline / UI. "sa" is always available.
 def available_backends() -> Dict[str, str]:
     backends = {"sa": "Simulated Annealing (classical)"}
     if quantum_available():
@@ -298,16 +395,11 @@ def available_backends() -> Dict[str, str]:
 
 
 def make_optimizer(backend: str = "sa") -> "Optimizer":
-    """Construct an optimizer by legacy backend key, falling back to classical SA."""
     if backend == "dwave" and quantum_available():
         return DimodQUBOOptimizer()
     return SimulatedAnnealingOptimizer()
 
 
-# The three honest optimizer MODES (Stage 5). All consume the SAME QUBO.
-#   classical            -> our simulated annealing
-#   quantum_inspired     -> D-Wave dimod/neal (real Ocean stack, classical sampler)
-#   quantum_hardware     -> D-Wave QPU; DISABLED unless dimod + a Leap token are set
 OPTIMIZER_MODES = {
     "classical": "Classical (simulated annealing)",
     "quantum_inspired": "Quantum-inspired (QUBO via D-Wave Ocean, classical sampler)",
@@ -316,8 +408,6 @@ OPTIMIZER_MODES = {
 
 
 def make_optimizer_for_mode(mode: str, token: Optional[str] = None) -> Tuple["Optimizer", str, List[str]]:
-    """Return (optimizer, resolved_mode, notes). Falls back honestly if a quantum
-    mode is requested but unavailable, and records why in `notes`."""
     notes: List[str] = []
     if mode == "quantum_hardware":
         if quantum_available() and token:
@@ -336,23 +426,45 @@ def make_optimizer_for_mode(mode: str, token: Optional[str] = None) -> Tuple["Op
 DEFAULT_OPTIMIZER: Optimizer = SimulatedAnnealingOptimizer()
 
 
+def _set_metrics(selected: List[str], by_id: Dict[str, Guide], w: QuboWeights) -> Dict[str, float]:
+    """Aggregate metrics for the chosen set (all 0..1, higher diversity = more spread)."""
+    if not selected:
+        return {"expected_outcome": 0.0, "off_target_burden": 0.0,
+                "diversity": 0.0, "uncertainty": 0.0}
+    gs = [by_id[s] for s in selected]
+    exp = sum(quality_i(g, w) for g in gs) / len(gs)
+    burden = sum(g.off_target.risk_score for g in gs) / len(gs)
+    unc = sum((g.ensemble.uncertainty_score if g.ensemble else 0.0) for g in gs) / len(gs)
+    if len(gs) > 1:
+        pairs = [redundancy_ij(gs[i], gs[j], w)
+                 for i in range(len(gs)) for j in range(i + 1, len(gs))]
+        diversity = 1.0 - (sum(pairs) / len(pairs))
+    else:
+        diversity = 1.0
+    return {"expected_outcome": round(exp, 4), "off_target_burden": round(burden, 4),
+            "diversity": round(max(0.0, diversity), 4), "uncertainty": round(unc, 4)}
+
+
 def optimize_guide_set(
     guides: List[Guide],
     set_size: int = 3,
     optimizer: Optimizer = DEFAULT_OPTIMIZER,
     mode: str = "classical",
     extra_notes: Optional[List[str]] = None,
+    weights: Optional[QuboWeights] = None,
+    preset: str = "balanced",
 ) -> OptimizationResult:
-    """Select the best N-guide set and explain the choice/rejections (Steps 7 & G),
-    including a Top-N-by-individual-score vs optimized-set comparison."""
+    """Select the best N-guide set and explain the choice/rejections, with a
+    Top-N-by-individual-score vs optimized-set comparison and aggregate set metrics."""
+    w = weights or get_weights(preset)
     if not guides:
         return OptimizationResult(
             selected_guide_ids=[], objective_value=0.0,
-            method=optimizer.method, mode=mode, iterations=0,
+            method=optimizer.method, mode=mode, iterations=0, preset=preset,
         )
 
     set_size = max(1, min(set_size, len(guides)))
-    qubo = build_qubo(guides, set_size)
+    qubo = build_qubo(guides, set_size, w)
     x, energy, iters = optimizer.solve(qubo)
 
     selected = [qubo.guide_ids[i] for i, bit in enumerate(x) if bit]
@@ -362,7 +474,6 @@ def optimize_guide_set(
     rejected = _explain_rejections(guides, selected, set_size)
     tradeoffs = _tradeoffs(guides, selected)
 
-    # Top-N by individual score (naive) vs the optimized set (the value of optimizing)
     top_n = [g.guide_id for g in sorted(guides, key=lambda g: g.final_score, reverse=True)[:set_size]]
     mean = lambda ids, f: (sum(f(by_id[i]) for i in ids) / len(ids)) if ids else 0.0
     out_delta = round(mean(selected, lambda g: g.final_score) - mean(top_n, lambda g: g.final_score), 4)
@@ -376,9 +487,14 @@ def optimize_guide_set(
                 f"score {'lower' if out_delta < 0 else 'higher'} by {abs(out_delta):.2f} — "
                 "trading a little individual score for lower redundancy / combined risk.")
 
+    metrics = _set_metrics(selected, by_id, w)
+    focus = list(dict.fromkeys(selected + top_n))
+    quality_by = {gid: round(quality_i(by_id[gid], w), 4) for gid in focus}
+    risk_by = {gid: round(risk_i(by_id[gid], w), 4) for gid in focus}
+
     return OptimizationResult(
         selected_guide_ids=selected,
-        objective_value=round(-energy, 4),     # report as "higher is better"
+        objective_value=round(-energy, 4),
         method=optimizer.method,
         mode=mode,
         iterations=iters,
@@ -388,6 +504,14 @@ def optimize_guide_set(
         expected_outcome_delta=out_delta,
         off_target_delta=off_delta,
         comparison_note=note,
+        preset=preset,
+        weights={k: round(v, 4) for k, v in asdict(w).items()},
+        set_expected_outcome=metrics["expected_outcome"],
+        set_off_target_burden=metrics["off_target_burden"],
+        set_diversity=metrics["diversity"],
+        set_uncertainty=metrics["uncertainty"],
+        quality_by_guide=quality_by,
+        risk_by_guide=risk_by,
     )
 
 
@@ -401,11 +525,9 @@ def _explain_rejections(guides, selected, set_size) -> Dict[str, str]:
     by_id = {g.guide_id: g for g in guides}
     sel_set = set(selected)
     out: Dict[str, str] = {}
-    # explain the top few near-miss guides
     near = [g for g in guides if g.guide_id not in sel_set][:5]
     for g in near:
         reasons = []
-        # redundancy against any selected guide?
         for sid in selected:
             if _similarity(g, by_id[sid]) > 0.5:
                 reasons.append(f"redundant with {sid} (overlapping/similar)")

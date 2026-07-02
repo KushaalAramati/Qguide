@@ -101,7 +101,10 @@ function Dashboard() {
         <div className="text-right">
           <span className="inline-flex items-center gap-2 bg-brand/10 text-brand-dark border border-brand/30 rounded-xl px-3 py-2 font-bold">✓ Optimization complete</span>
           <div className="text-muted text-xs mt-1">Completed in {proj.elapsed}s · {opt.method}</div>
-          <button onClick={exportCsv} className="btn-ghost mt-2 text-sm">⬇ Export results (CSV)</button>
+          <div className="flex gap-2 justify-end mt-2">
+            <Link href={`/project/${id}/ensemble`} className="btn-ghost text-sm">🧠 Ensemble breakdown</Link>
+            <button onClick={exportCsv} className="btn-ghost text-sm">⬇ Export results (CSV)</button>
+          </div>
         </div>
       </div>
 

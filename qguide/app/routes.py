@@ -152,6 +152,17 @@ def optimizer_modes() -> Dict[str, str]:
     return optimization.OPTIMIZER_MODES
 
 
+@router.get("/optimizer/presets")
+def optimizer_presets() -> Dict[str, Dict]:
+    """QUBO weight presets: name -> {description, weights}. Weights are configurable."""
+    from dataclasses import asdict
+    return {
+        name: {"description": optimization.PRESET_INFO.get(name, ""),
+               "weights": asdict(w)}
+        for name, w in optimization.PRESETS.items()
+    }
+
+
 @router.get("/assumptions")
 def get_assumptions() -> Dict[str, List[str]]:
     return {"assumptions": assumptions()}

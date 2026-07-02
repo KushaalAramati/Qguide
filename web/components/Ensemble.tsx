@@ -155,13 +155,33 @@ export function OffTargetHits({ report }: { report: any }) {
   );
 }
 
+function SetMetric({ label, value, hint }: { label: string; value: any; hint?: string }) {
+  return (
+    <div className="card !p-3" title={hint}>
+      <div className="label">{label}</div>
+      <div className="font-display font-extrabold text-lg text-brand">{value}</div>
+    </div>
+  );
+}
+
 export function OptimizerComparison({ opt }: { opt: any }) {
   if (!opt) return null;
   const sign = (n: number) => (n >= 0 ? "+" : "") + n.toFixed(3);
+  const pct = (n: number) => `${((n ?? 0) * 100).toFixed(0)}%`;
   return (
     <div>
-      <CardTitle>Optimized set vs. naive Top-N</CardTitle>
+      <div className="flex items-center justify-between">
+        <CardTitle>Optimized set vs. naive Top-N</CardTitle>
+        {opt.preset && <Pill value={`preset: ${opt.preset}`} kind={"good" as any} />}
+      </div>
       <div className="text-xs text-muted mb-2">Optimizer: <b>{opt.mode}</b> ({opt.method})</div>
+
+      <div className="text-[11px] rounded-lg bg-bg border border-border text-muted p-2 mb-3">
+        Biological scores are computed by classical bioinformatics / ML models. Quantum-inspired
+        optimization only searches guide <b>combinations</b> under the QUBO objective — it does not
+        predict biology.
+      </div>
+
       <div className="grid grid-cols-2 gap-3 text-sm">
         <div className="card !p-3">
           <div className="label">Top-N by individual score</div>
@@ -172,7 +192,16 @@ export function OptimizerComparison({ opt }: { opt: any }) {
           <div className="font-bold text-brand">{(opt.selected_guide_ids || []).join(", ")}</div>
         </div>
       </div>
-      <div className="flex gap-4 mt-2 text-sm">
+
+      {/* aggregate set metrics folded into the QUBO */}
+      <div className="grid grid-cols-4 gap-3 mt-3">
+        <SetMetric label="Expected outcome" value={pct(opt.set_expected_outcome)} hint="Mean quality_i of the set" />
+        <SetMetric label="Off-target burden" value={pct(opt.set_off_target_burden)} hint="Mean off-target risk (lower is better)" />
+        <SetMetric label="Diversity" value={pct(opt.set_diversity)} hint="1 - mean pairwise redundancy (higher = more spread)" />
+        <SetMetric label="Uncertainty" value={pct(opt.set_uncertainty)} hint="Mean ensemble uncertainty (lower is better)" />
+      </div>
+
+      <div className="flex gap-4 mt-3 text-sm">
         <div>Δ mean score <b>{sign(opt.expected_outcome_delta ?? 0)}</b></div>
         <div>Δ mean off-target <b>{sign(opt.off_target_delta ?? 0)}</b></div>
       </div>

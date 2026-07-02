@@ -83,9 +83,11 @@ def run_design(request: DesignRequest) -> DesignResponse:
     if not req_mode:
         req_mode = "quantum_inspired" if getattr(request, "optimizer_backend", "sa") == "dwave" else "classical"
     optimizer, resolved_mode, mode_notes = optimization.make_optimizer_for_mode(req_mode)
+    preset = getattr(request, "optimizer_preset", "balanced")
     opt_result = optimization.optimize_guide_set(
         guides, set_size=request.set_size, optimizer=optimizer,
-        mode=resolved_mode, extra_notes=mode_notes)
+        mode=resolved_mode, extra_notes=mode_notes,
+        weights=optimization.get_weights(preset), preset=preset)
     best_single = optimization.best_single_guide(guides)
 
     # Step 10 -- explanations
