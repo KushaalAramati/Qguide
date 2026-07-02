@@ -1,6 +1,7 @@
 "use client";
 // Animated, stylized simulation of the CRISPR–Cas9 mechanism for a selected guide.
-// Stages: scan -> PAM recognition -> R-loop formation -> cleavage -> double-strand break.
+// Stages: scan -> PAM recognition -> R-loop formation -> cleavage -> double-strand
+// break -> edit (excised DNA released, gRNA/edit strand slots into the gap).
 // This is an *educational / illustrative* animation of the canonical Cas9 mechanism —
 // it is not a physics/structural simulation. Geometry is stylized for clarity.
 import { memo, useEffect, useMemo, useRef, useState } from "react";
@@ -20,14 +21,16 @@ export interface SimStage {
 export const STAGES: SimStage[] = [
   { key: "scan", label: "1 · Scanning", start: 0.0,
     desc: "The Cas9–gRNA ribonucleoprotein slides along the DNA, probing for a PAM (protospacer-adjacent motif) next to a matching target." },
-  { key: "pam", label: "2 · PAM recognition", start: 0.28,
+  { key: "pam", label: "2 · PAM recognition", start: 0.2,
     desc: "Cas9 recognises and clamps onto the PAM. PAM binding licenses local unwinding of the adjacent DNA." },
-  { key: "rloop", label: "3 · R-loop formation", start: 0.44,
+  { key: "rloop", label: "3 · R-loop formation", start: 0.34,
     desc: "The duplex melts and the gRNA spacer base-pairs with the target strand, displacing the non-target strand to form an R-loop." },
-  { key: "cut", label: "4 · Cleavage", start: 0.68,
+  { key: "cut", label: "4 · Cleavage", start: 0.54,
     desc: "A complete R-loop activates the nuclease lobes: HNH cleaves the target strand and RuvC cleaves the non-target strand ~3 bp upstream of the PAM." },
-  { key: "dsb", label: "5 · Double-strand break", start: 0.84,
-    desc: "A blunt double-strand break is produced. Cellular repair (NHEJ / HDR) resolves it — this is where the edit is written." },
+  { key: "dsb", label: "5 · Double-strand break", start: 0.64,
+    desc: "A blunt double-strand break is produced and the two DNA ends separate." },
+  { key: "edit", label: "6 · Edit · gRNA replaces cut DNA", start: 0.8,
+    desc: "The excised DNA segment is released and the highlighted guide/edit strand slides into the gap, re-forming an edited duplex. Illustrative: in a real knock-in the new sequence is supplied by a donor template that Cas9/gRNA direct to the cut site." },
 ];
 
 export function stageForProgress(p: number): number {
@@ -97,8 +100,9 @@ const Scene = memo(function Scene({
   const rnp = useRef<THREE.Group>(null);
   const leftG = useRef<THREE.Group>(null);   // everything left of the cut
   const rightG = useRef<THREE.Group>(null);  // everything right of the cut
-  const rloopTop = useRef<THREE.Group>(null); // displaced non-target strand (guide region)
-  const grnaPair = useRef<THREE.Group>(null); // gRNA that pairs into the R-loop
+  const rloopTop = useRef<THREE.Group>(null); // displaced non-target strand (excised on edit)
+  const rloopMats = useRef<THREE.MeshStandardMaterial[]>([]);
+  const grnaPair = useRef<THREE.Group>(null); // gRNA that pairs into the R-loop / slots in
   const grnaMats = useRef<THREE.MeshStandardMaterial[]>([]);
   const spark = useRef<THREE.Mesh>(null);
   const sparkMat = useRef<THREE.MeshStandardMaterial>(null);
@@ -106,6 +110,7 @@ const Scene = memo(function Scene({
   const hnhMat = useRef<THREE.MeshStandardMaterial>(null);
   const ruvcMat = useRef<THREE.MeshStandardMaterial>(null);
   const lobeGroup = useRef<THREE.Group>(null);
+  const editGlow = useRef<THREE.PointLight>(null);
 
   const progress = useRef(0);
   const lastReport = useRef(0);
@@ -117,51 +122,63 @@ const Scene = memo(function Scene({
       progress.current = clamp01(c.seek);
       c.seek = null;
     } else if (c.playing) {
-      progress.current += dt * 0.14 * c.speed;
+      progress.current += dt * 0.13 * c.speed;
       if (progress.current >= 1) progress.current = c.loop ? 0 : 1;
     }
     const p = progress.current;
 
     // ---- derived stage amounts ----
-    const scan = smooth(ramp(p, 0.0, 0.28));      // RNP travels to dock
-    const dock = smooth(ramp(p, 0.28, 0.42));     // settle onto PAM
-    const unwind = smooth(ramp(p, 0.44, 0.66));   // R-loop opens
-    const cutAmt = ramp(p, 0.68, 0.82);           // nuclease flash
-    const dsb = smooth(ramp(p, 0.84, 1.0));       // ends separate
+    const scan = smooth(ramp(p, 0.0, 0.2));       // RNP travels to dock
+    const dock = smooth(ramp(p, 0.2, 0.32));      // settle onto PAM
+    const unwind = smooth(ramp(p, 0.34, 0.52));   // R-loop opens
+    const cutAmt = ramp(p, 0.54, 0.64);           // nuclease flash
+    const dsbOpen = smooth(ramp(p, 0.64, 0.78));  // ends separate
+    const edit = smooth(ramp(p, 0.8, 1.0));       // excise + gRNA slots in
 
-    // RNP glide + settle
+    // RNP glide + settle; releases and lifts away during the edit phase
     if (rnp.current) {
-      const x = THREE.MathUtils.lerp(entryX, dockX, scan);
-      rnp.current.position.x = x;
-      const settle = Math.sin(dock * Math.PI) * 0.12;
-      rnp.current.position.y = settle;
-      const s = 0.9 + 0.1 * dock;
-      rnp.current.scale.setScalar(s);
-      rnp.current.visible = scan > 0.001;
+      rnp.current.position.x = THREE.MathUtils.lerp(entryX, dockX, scan);
+      rnp.current.position.y = Math.sin(dock * Math.PI) * 0.12 + edit * 4.0;
+      rnp.current.scale.setScalar(0.9 + 0.1 * dock);
+      rnp.current.visible = scan > 0.001 && edit < 0.97;
     }
-    // Lobes "breathe" a touch while engaged
     if (lobeGroup.current) {
       const b = 1 + 0.02 * Math.sin(p * 40) * dock;
       lobeGroup.current.scale.set(b, b, b);
     }
 
-    // R-loop: lift & splay the displaced (non-target) strand in the guide region
+    // R-loop displaced (non-target) strand: lifts during unwind, then is EXCISED
+    // (flies up and away, fading out) during the edit phase.
     if (rloopTop.current) {
-      rloopTop.current.position.y = unwind * 1.7;
-      rloopTop.current.position.z = unwind * 0.6;
-      rloopTop.current.rotation.z = unwind * 0.25;
+      rloopTop.current.position.y = unwind * 1.7 + edit * 5.0;
+      rloopTop.current.position.z = unwind * 0.6 + edit * 2.4;
+      rloopTop.current.position.x = edit * 2.6;
+      rloopTop.current.rotation.z = unwind * 0.25 + edit * 1.0;
     }
-    // gRNA pairing strand fades in as the R-loop forms
-    grnaMats.current.forEach((m) => { if (m) m.opacity = 0.15 + 0.85 * unwind; });
-    if (grnaPair.current) grnaPair.current.visible = unwind > 0.01;
+    rloopMats.current.forEach((m) => { if (m) m.opacity = (0.2 + 0.8 * unwind) * (1 - edit); });
 
-    // Nuclease domains glow as they engage, peak during the cut
-    const glow = Math.max(dock * 0.25, cutAmt);
+    // gRNA / edit strand: fades in with the R-loop, then descends into the gap
+    // (replacing the excised DNA) and glows as the "edited" strand.
+    if (grnaPair.current) {
+      grnaPair.current.visible = unwind > 0.01 || edit > 0.01;
+      grnaPair.current.position.y = -edit * 1.45;
+      grnaPair.current.position.z = -edit * 0.95;
+    }
+    grnaMats.current.forEach((m) => {
+      if (m) {
+        m.opacity = 0.15 + 0.85 * Math.max(unwind, edit);
+        m.emissiveIntensity = 0.35 + 1.0 * edit;
+      }
+    });
+    if (editGlow.current) { editGlow.current.position.x = dockX; editGlow.current.intensity = edit * 3.2; }
+
+    // Nuclease domains glow as they engage, peak during the cut, fade after edit
+    const glow = Math.max(dock * 0.25, cutAmt) * (1 - edit);
     if (hnhMat.current) hnhMat.current.emissiveIntensity = 0.2 + 1.6 * glow;
     if (ruvcMat.current) ruvcMat.current.emissiveIntensity = 0.2 + 1.6 * glow;
 
-    // Cleavage spark (a brief pulse around the middle of the cut window)
-    const pulse = Math.sin(clamp01(cutAmt) * Math.PI); // 0->1->0
+    // Cleavage spark (a brief pulse during the cut)
+    const pulse = Math.sin(clamp01(cutAmt) * Math.PI);
     if (spark.current) {
       spark.current.position.x = dockX;
       spark.current.visible = cutAmt > 0.001 && cutAmt < 0.999;
@@ -170,10 +187,10 @@ const Scene = memo(function Scene({
     if (sparkMat.current) sparkMat.current.emissiveIntensity = pulse * 3;
     if (sparkLight.current) sparkLight.current.intensity = pulse * 6;
 
-    // Double-strand break: slide the two halves apart
-    const sep = dsb * 1.3;
-    if (leftG.current) { leftG.current.position.x = -sep; leftG.current.position.y = -dsb * 0.25; }
-    if (rightG.current) { rightG.current.position.x = sep; rightG.current.position.y = dsb * 0.25; }
+    // Double-strand break: halves separate, then close partway around the insert
+    const sep = 1.35 * dsbOpen * (1 - 0.72 * edit);
+    if (leftG.current) { leftG.current.position.x = -sep; leftG.current.position.y = -dsbOpen * 0.22 * (1 - edit); }
+    if (rightG.current) { rightG.current.position.x = sep; rightG.current.position.y = dsbOpen * 0.22 * (1 - edit); }
 
     // report progress to the HTML layer a few times per second
     lastReport.current += dt;
@@ -217,7 +234,7 @@ const Scene = memo(function Scene({
   );
 
   // Render one DNA half (bases + backbone). Top-strand guide bases are omitted
-  // here — they live in the liftable R-loop group instead.
+  // here — they live in the liftable / excisable R-loop group instead.
   const half = (side: boolean, ref: RefObject<THREE.Group>) => (
     <group ref={ref}>
       {idx.map((i) => seg(top, i, "#7A33A6", side, true))}
@@ -240,17 +257,20 @@ const Scene = memo(function Scene({
       {half(true, leftG)}
       {half(false, rightG)}
 
-      {/* R-loop displaced non-target strand (guide region), lifted as a group */}
+      {/* R-loop displaced non-target strand (guide region) — lifted, then excised */}
       <group ref={rloopTop}>
         {seq.split("").map((b, i) => inGuide(i) ? (
           <mesh key={`rl${i}`} position={top[i]} scale={1.1}>
             <sphereGeometry args={[0.32, 16, 16]} />
-            <meshStandardMaterial color={DNA_COLORS[b] || "#9ca3af"} emissive={DNA_COLORS[b] || "#000"} emissiveIntensity={0.3} roughness={0.4} />
+            <meshStandardMaterial
+              ref={(m) => { if (m) rloopMats.current[i] = m; }}
+              color={DNA_COLORS[b] || "#9ca3af"} emissive={DNA_COLORS[b] || "#000"}
+              emissiveIntensity={0.3} transparent opacity={0.9} roughness={0.4} />
           </mesh>
         ) : null)}
       </group>
 
-      {/* gRNA that base-pairs with the target strand inside the R-loop */}
+      {/* gRNA that base-pairs with the target strand, then slots into the gap */}
       <group ref={grnaPair} visible={false}>
         {grnaPts.map((p0, k) => {
           const gi = gStart + k;
@@ -274,6 +294,7 @@ const Scene = memo(function Scene({
           );
         })}
       </group>
+      <pointLight ref={editGlow} position={[dockX, 0, 2]} color="#c49ae0" intensity={0} distance={14} />
 
       {/* Cas9 ribonucleoprotein — stylized bilobed translucent blob around the dock */}
       <group ref={rnp} visible={false}>
@@ -380,7 +401,7 @@ export function CrisprSimulation3D({
         {/* legend */}
         <div className="absolute bottom-2 left-2 flex flex-wrap gap-2 text-[10px] text-white/80">
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: "#f5c542" }} />PAM</span>
-          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: "#c49ae0" }} />gRNA:target</span>
+          <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: "#c49ae0" }} />gRNA / edit</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: "#e0567a" }} />HNH</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: "#f0a24a" }} />RuvC</span>
         </div>
@@ -407,7 +428,7 @@ export function CrisprSimulation3D({
         </label>
       </div>
 
-      {/* stage stepper + narration */}
+      {/* jump-to-stage row (free jumps, not a forced sequence) */}
       <div className="flex gap-1 flex-wrap">
         {STAGES.map((s, i) => (
           <button key={s.key} onClick={() => jumpStage(i)}
@@ -417,12 +438,12 @@ export function CrisprSimulation3D({
         ))}
       </div>
       <div className="rounded-xl bg-bg border border-border p-3 text-sm">
-        <b className="text-brand">{STAGES[stage].label.split("·")[1]?.trim()}</b>
-        <span className="text-fg"> — {STAGES[stage].desc}</span>
+        <b className="text-brand">{STAGES[stage].label.split("·").slice(1).join("·").trim()}</b>
+        <span className="text-ink"> — {STAGES[stage].desc}</span>
       </div>
       <div className="text-[11px] text-muted">
-        Illustrative animation of the canonical Cas9 mechanism for this guide (scan → PAM → R-loop → cleavage → double-strand break).
-        Shapes are stylized for clarity and are not a structural or physical simulation.
+        Illustrative animation of the canonical Cas9 mechanism for this guide (scan → PAM → R-loop → cleavage → double-strand break → edit).
+        Shapes are stylized for clarity and are not a structural or physical simulation; the final "edit" step is a simplified depiction of repair.
       </div>
     </div>
   );
