@@ -3,6 +3,46 @@ import { BarRow, CardTitle, Pill } from "./ui";
 
 const PURPLE = "#7A33A6", BLUE = "#9B59B6", AMBER = "#C9892F";
 
+const TASK_LABEL: Record<string, string> = {
+  on_target: "On-target activity", specificity: "Specificity", repair: "Repair outcome",
+};
+
+function KindBadge({ kind, available }: { kind: string; available: boolean }) {
+  if (!available)
+    return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-bg text-muted" title="Model not installed — abstains (no score)">provisional · abstains</span>;
+  const map: Record<string, string> = {
+    real: "bg-brand/10 text-brand", heuristic: "bg-warn/15 text-[#9A6818]",
+  };
+  return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${map[kind] || "bg-bg text-muted"}`}>{kind}</span>;
+}
+
+function ModelBreakdown({ e }: { e: any }) {
+  const rows: any[] = Array.isArray(e.model_scores) ? e.model_scores : [];
+  if (!rows.length) return null;
+  return (
+    <div className="mt-3 border-t border-border pt-2">
+      <div className="label mb-1">Contributing models</div>
+      {["on_target", "specificity", "repair"].map((task) => {
+        const group = rows.filter((m) => m.task === task);
+        if (!group.length) return null;
+        return (
+          <div key={task} className="mb-2">
+            <div className="text-[11px] font-bold text-muted uppercase tracking-wide">{TASK_LABEL[task] || task}</div>
+            {group.map((m, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm py-0.5">
+                <span className="flex-1 truncate" title={m.note}>{m.name}</span>
+                <KindBadge kind={m.kind} available={m.available} />
+                <span className="w-12 text-right font-mono">{m.available && m.score != null ? Number(m.score).toFixed(2) : "\u2014"}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <div className="text-[10px] text-muted">Biological scores come from classical bioinformatics / ML models above; unavailable ML models abstain (—) rather than guess.</div>
+    </div>
+  );
+}
+
 const COMPONENT_LABELS: [string, string, string][] = [
   // [ensemble field, label, color]
   ["on_target_score", "On-target", PURPLE],
@@ -51,6 +91,18 @@ export function EnsemblePanel({ e }: { e: any }) {
         </div>
       ))}
       <BarRow label="Uncertainty" value={e.uncertainty_score ?? 0} color={AMBER} />
+      {e.rationale && (
+        <div className="text-[12px] text-ink bg-bg rounded-lg p-2 mt-2">{e.rationale}</div>
+      )}
+      <ModelBreakdown e={e} />
+      {Array.isArray(e.limitations) && e.limitations.length > 0 && (
+        <div className="text-[11px] text-muted mt-2">
+          <b>Limitations</b>
+          <ul className="list-disc ml-4 mt-0.5">
+            {e.limitations.map((l: string, i: number) => <li key={i}>{l}</li>)}
+          </ul>
+        </div>
+      )}
       {prov.size > 0 && (
         <div className="text-[11px] text-muted mt-2">⚠ <b>prov</b> = provisional placeholder
           component (heuristic pending a real trained/genome-backed model).</div>

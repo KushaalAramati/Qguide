@@ -53,6 +53,21 @@ class RiskCategory(str, Enum):
     HIGH = "high"
 
 
+class ModelScore(BaseModel):
+    """One named model's contribution to the ensemble (Stage A).
+
+    `kind` is one of: real | heuristic | provisional. Unavailable external ML models
+    ABSTAIN: `available=False` and `score=None` (never a fabricated number).
+    """
+    name: str
+    task: str                      # on_target | specificity | repair
+    kind: str                      # real | heuristic | provisional
+    available: bool = True
+    score: Optional[float] = None  # None => model abstained (unavailable)
+    citation: str = ""
+    note: str = ""
+
+
 class EnsembleScore(BaseModel):
     """The spec's transparent, multi-component QGuide score.
 
@@ -77,6 +92,9 @@ class EnsembleScore(BaseModel):
     confidence_label: str = "medium"       # high | medium | low
     goal_profile: str = "knockout_balanced"
     badges: List[str] = Field(default_factory=list)
+    model_scores: List[ModelScore] = Field(default_factory=list)  # per-model breakdown
+    limitations: List[str] = Field(default_factory=list)          # honest caveats
+    rationale: str = ""                                           # plain-English "why this score"
 
 
 # --------------------------------------------------------------------------- #

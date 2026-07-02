@@ -26,9 +26,16 @@ def test_ensemble_components_in_range():
 
 def test_provisional_components_are_flagged_honestly():
     e = _run(desired_outcome="knockout").guides[0].ensemble
-    # these are placeholders today and must be advertised as provisional
+    # genomic context is still a placeholder and must be advertised as provisional
     assert "genomic_context_score" in e.provisional
-    assert "model_agreement_score" in e.provisional
+    # model agreement is now computed from >=2 AVAILABLE on-target models, so it is
+    # no longer a provisional placeholder; unavailable ML models must abstain instead.
+    assert "model_agreement_score" not in e.provisional
+    assert e.model_scores, "ensemble must expose the per-model breakdown"
+    unavailable = [m for m in e.model_scores if not m.available]
+    assert unavailable, "external ML model adapters should be declared"
+    assert all(m.score is None for m in unavailable), "unavailable models must abstain (score None)"
+    assert all(m.score is not None for m in e.model_scores if m.available)
 
 
 def test_risk_tolerance_changes_penalty_weights():

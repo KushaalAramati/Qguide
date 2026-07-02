@@ -29,8 +29,8 @@ from __future__ import annotations
 from statistics import pstdev
 from typing import Dict, List
 
-from qguide.app.schemas import DesignRequest, EnsembleScore, Guide
-from qguide.core import outcome_modes
+from qguide.app.schemas import DesignRequest, EnsembleScore, Guide, ModelScore
+from qguide.core import models, outcome_modes
 
 # --------------------------------------------------------------------------- #
 # Goal weight profiles                                                          #
@@ -111,7 +111,7 @@ def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
     goal = goal_for(request)
     mode = outcome_modes.get_mode(goal)
     w = _weights(request)
-    provisional: List[str] = ["genomic_context_score", "model_agreement_score"]
+    provisional: List[str] = ["genomic_context_score"]
     if mode.provisional:
         provisional.append("desired_outcome_score")
 
@@ -129,11 +129,18 @@ def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
     if not has_cell:
         provisional.append("cell_context_score")
 
-    # model agreement: with one model we approximate it as the consistency of the
-    # main positive signals (low spread => they "agree"). PROVISIONAL until an
-    # actual ensemble of models exists.
-    signals = [on_target, desired, off_target_safety, specificity]
-    agreement = max(0.0, 1.0 - 2.0 * pstdev(signals))
+    # model agreement: computed from the on-target models that ACTUALLY ran (real
+    # cross-model agreement). If fewer than two models are available we fall back to
+    # a single-model signal-consistency proxy and flag model_agreement as provisional.
+    model_rows = models.model_report(guide)
+    real_agreement = models.on_target_agreement(guide)
+    if real_agreement is not None:
+        agreement = real_agreement
+    else:
+        signals = [on_target, desired, off_target_safety, specificity]
+        agreement = max(0.0, 1.0 - 2.0 * pstdev(signals))
+        provisional.append("model_agreement_score")
+    model_disagreements = models.disagreements(guide)
 
     # uncertainty: rises with missing context, no-edit risk, structure/homopolymer
     # penalties, and the number of provisional components in play.
@@ -164,6 +171,11 @@ def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
 
     conf_label = "high" if uncertainty < 0.25 else "low" if uncertainty > 0.55 else "medium"
 
+    model_scores = [ModelScore(**row) for row in model_rows]
+    limitations = models.limitations(guide)
+    rationale = _rationale(guide, final, conf_label, agreement, real_agreement,
+                           contributions, risk, model_disagreements)
+
     return EnsembleScore(
         on_target_score=round(on_target, 4),
         off_target_score=round(off_target_safety, 4),
@@ -181,6 +193,9 @@ def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
         confidence_label=conf_label,
         goal_profile=f"{goal}_{getattr(request, 'risk_tolerance', 'balanced')}",
         badges=_badges(guide, mode, conf_label, risk, final),
+        model_scores=model_scores,
+        limitations=limitations,
+        rationale=rationale,
     )
 
 
@@ -192,6 +207,36 @@ def _badges(guide: Guide, mode, conf: str, risk: float, final: float) -> List[st
     if mb:
         out.append(mb)
     return out
+
+
+
+def _rationale(guide, final, conf_label, agreement, real_agreement,
+               contributions, risk, model_disagreements) -> str:
+    """Plain-English 'why this score' string for the ensemble breakdown panel."""
+    pos = {k: v for k, v in contributions.items() if k not in ("off_target", "uncertainty")}
+    top = sorted(pos.items(), key=lambda kv: kv[1], reverse=True)[:2]
+    label = {
+        "on_target": "on-target activity", "desired_outcome": "desired-outcome probability",
+        "specificity": "specificity", "repair": "repair outcome",
+        "genomic_context": "genomic context", "cell_context": "cell context",
+        "model_agreement": "model agreement",
+    }
+    drivers = ", ".join(label.get(k, k) for k, _ in top) if top else "its component scores"
+    parts = [f"{guide.guide_id} scored {final:.2f} ({conf_label} confidence). "
+             f"Strongest drivers: {drivers}."]
+    if risk >= 0.4:
+        parts.append(f" Off-target risk is elevated ({risk:.2f}), which pulls the score down.")
+    else:
+        parts.append(f" No severe off-target risk was predicted ({risk:.2f}).")
+    if real_agreement is not None:
+        n = sum(1 for m in models.ON_TARGET_MODELS if m.score(guide) is not None)
+        parts.append(f" On-target models agree at {agreement:.2f} across {n} available models.")
+        if model_disagreements:
+            parts.append(" Note: " + "; ".join(model_disagreements) + ".")
+    else:
+        parts.append(" Model agreement is provisional (only one on-target model available).")
+    parts.append(" Computational prediction — requires experimental validation.")
+    return "".join(parts)
 
 
 def score_guides(guides: List[Guide], request: DesignRequest) -> List[Guide]:

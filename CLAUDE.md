@@ -17,8 +17,8 @@ via ensemble scoring + quantum-inspired multi-guide selection.
 
 ## Layout
 - `qguide/core/` — scientific pipeline: generate → score → off_target → context → outcome →
-  **ensemble** → optimize → explain. Key modules: `ensemble.py` (named-component
-  `final_qguide_score` with goal profiles × risk tolerance), `outcome_modes.py` (pluggable
+  **ensemble** → optimize → explain. Key modules: `models.py` (Stage A model-adapter registry: named on-target/specificity/repair models with real/heuristic/provisional kinds; unavailable ML models abstain — feeds real cross-model agreement + per-model breakdown into the ensemble), `ensemble.py` (named-component
+  `final_qguide_score` with goal profiles × risk tolerance; now also emits `model_scores`, `limitations`, `rationale`), `outcome_modes.py` (pluggable
   OutcomeMode registry), `off_target.py` (per-hit report + genome-engine stub), `optimization.py`
   (QUBO + simulated annealing + D-Wave `dimod`; modes classical/quantum_inspired/quantum_hardware;
   Top-N-vs-set comparison), `benchmark.py`, `report.py`, `pipeline.py` (orchestrator).
