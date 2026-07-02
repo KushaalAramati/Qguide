@@ -8,7 +8,7 @@ export default function Home() {
   const router = useRouter();
   useEffect(() => {
     if (!ready) return;
-    router.replace(account ? "/new" : "/login");
+    router.replace(account ? "/dashboard" : "/login");
   }, [ready, account, router]);
   return <div className="min-h-screen grid place-items-center text-muted">Loading…</div>;
 }

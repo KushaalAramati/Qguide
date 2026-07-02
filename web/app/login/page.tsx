@@ -34,7 +34,7 @@ export default function LoginPage() {
       }
       setToken(res.token);
       setAccount(res.account);
-      router.replace("/new");
+      router.replace("/dashboard");
     } catch (e: any) {
       // 401 on sign-in => wrong password: precise message + red border.
       if (tab === "in" && e.status === 401) {
