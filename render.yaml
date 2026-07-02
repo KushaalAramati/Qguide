@@ -1,0 +1,31 @@
+# Render Blueprint: FastAPI backend + managed Postgres.
+# In the Render dashboard: New + -> Blueprint -> connect this repo. It creates the
+# web service and the database, wires DATABASE_URL, and generates JWT_SECRET.
+# After the Vercel frontend is live, set ALLOWED_ORIGINS to its URL.
+services:
+  - type: web
+    name: qguide-api
+    runtime: python
+    plan: free
+    region: oregon
+    buildCommand: "pip install -r requirements-api.txt"
+    startCommand: "uvicorn qguide.app.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /health
+    envVars:
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: qguide-db
+          property: connectionString
+      - key: ALLOWED_ORIGINS
+        sync: false            # set to https://<your-app>.vercel.app after frontend deploy
+      - key: ADMIN_EMAILS
+        sync: false            # comma-separated emails that get the in-app Admin panel
+      - key: PYTHON_VERSION
+        value: "3.12.10"
+
+databases:
+  - name: qguide-db
+    plan: free
+    region: oregon

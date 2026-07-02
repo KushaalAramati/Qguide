@@ -28,16 +28,55 @@ class Strand(str, Enum):
 
 class DesiredOutcome(str, Enum):
     KNOCKOUT = "knockout"
+    PRECISE_EDIT = "precise_edit"
+    BASE_EDIT = "base_edit"
+    PRIME_EDIT = "prime_edit"
+    CRISPRI = "crispri"            # repression
+    CRISPRA = "crispra"            # activation
+    SCREEN = "screen"             # screening / library design
+    # legacy / general modes (kept for backward compatibility)
     GENE_DISRUPTION = "gene_disruption"
     EXON_TARGETING = "exon_targeting"
     DELETION = "deletion"
     CUSTOM = "custom"
 
 
+class RiskTolerance(str, Enum):
+    LOW = "low"             # therapeutic-like: heavily penalise off-target/uncertainty
+    BALANCED = "balanced"
+    HIGH = "high"           # exploratory: tolerate more risk for activity
+
+
 class RiskCategory(str, Enum):
     LOW = "low"
     MODERATE = "moderate"
     HIGH = "high"
+
+
+class EnsembleScore(BaseModel):
+    """The spec's transparent, multi-component QGuide score.
+
+    Every component is in 0..1. `final_qguide_score` is a *visible* weighted
+    combination of them (weights depend on the user's goal + risk tolerance), not a
+    black box. Components listed in `provisional` are placeholders/heuristics whose
+    real (trained-model or genome-backed) implementations are not yet wired in.
+    """
+    on_target_score: float = 0.0
+    off_target_score: float = 0.0          # SAFETY: 1 - aggregate off-target risk
+    specificity_score: float = 0.0
+    desired_outcome_score: float = 0.0
+    repair_outcome_score: float = 0.0
+    genomic_context_score: float = 0.0
+    cell_context_score: float = 0.0
+    model_agreement_score: float = 0.0
+    uncertainty_score: float = 0.0         # 0 = confident, 1 = very uncertain
+    final_qguide_score: float = 0.0
+    weights: Dict[str, float] = Field(default_factory=dict)
+    contributions: Dict[str, float] = Field(default_factory=dict)  # signed, per term
+    provisional: List[str] = Field(default_factory=list)
+    confidence_label: str = "medium"       # high | medium | low
+    goal_profile: str = "knockout_balanced"
+    badges: List[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -72,12 +111,31 @@ class MismatchBin(BaseModel):
     count: int
 
 
+class OffTargetHit(BaseModel):
+    """A single predicted off-target site (genome-backed or synthetic/heuristic)."""
+    locus: str = "synthetic"                   # e.g. "chr1:1,234,567" or a descriptor
+    position: int = -1
+    strand: str = "+"
+    mismatches: int = 0
+    mismatch_positions: List[int] = Field(default_factory=list)
+    pam: str = ""
+    cfd_score: float = 0.0                     # 0..1, CFD/MIT-style (placeholder for now)
+    annotation: str = "unknown"                # exon | promoter | enhancer | intron | intergenic
+    severity: RiskCategory = RiskCategory.LOW
+    explanation: str = ""
+    provisional: bool = True                    # True until genome-backed alignment is used
+
+
 class OffTargetReport(BaseModel):
     risk_score: float = 0.0                    # 0 (safe) .. 1 (dangerous)
     risk_category: RiskCategory = RiskCategory.LOW
     potential_off_target_count: int = 0
     mismatch_distribution: List[MismatchBin] = Field(default_factory=list)
     concerning_regions: List[Dict[str, object]] = Field(default_factory=list)
+    hits: List[OffTargetHit] = Field(default_factory=list)
+    aggregate_burden: float = 0.0              # severity-weighted total, not just count
+    genome_backed: bool = False
+    warning: str = ""
     method: str = "heuristic_v1"
 
 
@@ -124,6 +182,7 @@ class Guide(BaseModel):
 
     final_score: float = 0.0
     final_breakdown: Dict[str, float] = Field(default_factory=dict)
+    ensemble: EnsembleScore = Field(default_factory=EnsembleScore)
     confidence: float = 0.0
     warnings: List[str] = Field(default_factory=list)
     explanation: str = ""
@@ -152,11 +211,15 @@ class DesignRequest(BaseModel):
     temperature: Optional[float] = None       # Celsius
     expression_level: Optional[str] = None    # low | medium | high
 
+    risk_tolerance: str = "balanced"           # low | balanced | high (affects weights)
+
     # Knobs ------------------------------------------------------------------- #
     guide_length: Optional[int] = None
     max_guides: int = 200                      # cap on candidates carried forward
     set_size: int = 3                          # N for "best N-guide set"
-    optimizer_backend: str = "sa"              # "sa" | "dwave" (quantum-inspired)
+    selection_mode: str = "set"                # "individual" | "set"
+    optimizer_mode: str = "classical"          # classical | quantum_inspired | quantum_hardware
+    optimizer_backend: str = "sa"              # legacy: "sa" | "dwave"
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -165,9 +228,15 @@ class OptimizationResult(BaseModel):
     selected_guide_ids: List[str]
     objective_value: float
     method: str
+    mode: str = "classical"                    # classical | quantum_inspired | quantum_hardware
     iterations: int
     rejected_explanations: Dict[str, str] = Field(default_factory=dict)
     tradeoffs: List[str] = Field(default_factory=list)
+    # Top-N-by-individual-score vs the optimized set (the value of optimizing)
+    top_n_individual: List[str] = Field(default_factory=list)
+    expected_outcome_delta: float = 0.0        # optimized mean score - top-N mean score
+    off_target_delta: float = 0.0              # optimized mean risk - top-N mean risk
+    comparison_note: str = ""
 
 
 class DesignResponse(BaseModel):

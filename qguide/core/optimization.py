@@ -298,10 +298,39 @@ def available_backends() -> Dict[str, str]:
 
 
 def make_optimizer(backend: str = "sa") -> "Optimizer":
-    """Construct an optimizer by backend key, falling back to classical SA."""
+    """Construct an optimizer by legacy backend key, falling back to classical SA."""
     if backend == "dwave" and quantum_available():
         return DimodQUBOOptimizer()
     return SimulatedAnnealingOptimizer()
+
+
+# The three honest optimizer MODES (Stage 5). All consume the SAME QUBO.
+#   classical            -> our simulated annealing
+#   quantum_inspired     -> D-Wave dimod/neal (real Ocean stack, classical sampler)
+#   quantum_hardware     -> D-Wave QPU; DISABLED unless dimod + a Leap token are set
+OPTIMIZER_MODES = {
+    "classical": "Classical (simulated annealing)",
+    "quantum_inspired": "Quantum-inspired (QUBO via D-Wave Ocean, classical sampler)",
+    "quantum_hardware": "Quantum hardware (D-Wave QPU — experimental, needs Leap token)",
+}
+
+
+def make_optimizer_for_mode(mode: str, token: Optional[str] = None) -> Tuple["Optimizer", str, List[str]]:
+    """Return (optimizer, resolved_mode, notes). Falls back honestly if a quantum
+    mode is requested but unavailable, and records why in `notes`."""
+    notes: List[str] = []
+    if mode == "quantum_hardware":
+        if quantum_available() and token:
+            return DimodQUBOOptimizer(use_hardware=True, token=token), "quantum_hardware", notes
+        notes.append("Quantum hardware requested but no D-Wave Leap token/backend is "
+                     "configured — fell back to quantum-inspired/classical.")
+        mode = "quantum_inspired"
+    if mode == "quantum_inspired":
+        if quantum_available():
+            return DimodQUBOOptimizer(), "quantum_inspired", notes
+        notes.append("Quantum-inspired backend (dimod) not installed — using classical.")
+        mode = "classical"
+    return SimulatedAnnealingOptimizer(), "classical", notes
 
 
 DEFAULT_OPTIMIZER: Optimizer = SimulatedAnnealingOptimizer()
@@ -311,12 +340,15 @@ def optimize_guide_set(
     guides: List[Guide],
     set_size: int = 3,
     optimizer: Optimizer = DEFAULT_OPTIMIZER,
+    mode: str = "classical",
+    extra_notes: Optional[List[str]] = None,
 ) -> OptimizationResult:
-    """Select the best N-guide set and explain the choice/rejections (Steps 7 & G)."""
+    """Select the best N-guide set and explain the choice/rejections (Steps 7 & G),
+    including a Top-N-by-individual-score vs optimized-set comparison."""
     if not guides:
         return OptimizationResult(
             selected_guide_ids=[], objective_value=0.0,
-            method=optimizer.method, iterations=0,
+            method=optimizer.method, mode=mode, iterations=0,
         )
 
     set_size = max(1, min(set_size, len(guides)))
@@ -330,13 +362,32 @@ def optimize_guide_set(
     rejected = _explain_rejections(guides, selected, set_size)
     tradeoffs = _tradeoffs(guides, selected)
 
+    # Top-N by individual score (naive) vs the optimized set (the value of optimizing)
+    top_n = [g.guide_id for g in sorted(guides, key=lambda g: g.final_score, reverse=True)[:set_size]]
+    mean = lambda ids, f: (sum(f(by_id[i]) for i in ids) / len(ids)) if ids else 0.0
+    out_delta = round(mean(selected, lambda g: g.final_score) - mean(top_n, lambda g: g.final_score), 4)
+    off_delta = round(mean(selected, lambda g: g.off_target.risk_score)
+                      - mean(top_n, lambda g: g.off_target.risk_score), 4)
+    if set(selected) == set(top_n):
+        note = "The optimized set matches the top-N by individual score (no redundancy to resolve)."
+    else:
+        note = (f"The optimized set differs from the naive top-N: mean off-target risk "
+                f"{'lower' if off_delta < 0 else 'higher'} by {abs(off_delta):.2f} and mean "
+                f"score {'lower' if out_delta < 0 else 'higher'} by {abs(out_delta):.2f} — "
+                "trading a little individual score for lower redundancy / combined risk.")
+
     return OptimizationResult(
         selected_guide_ids=selected,
         objective_value=round(-energy, 4),     # report as "higher is better"
         method=optimizer.method,
+        mode=mode,
         iterations=iters,
         rejected_explanations=rejected,
-        tradeoffs=tradeoffs,
+        tradeoffs=tradeoffs + (extra_notes or []),
+        top_n_individual=top_n,
+        expected_outcome_delta=out_delta,
+        off_target_delta=off_delta,
+        comparison_note=note,
     )
 
 

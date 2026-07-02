@@ -1,0 +1,9 @@
+# FastAPI backend (Render web service). Lean: no streamlit/plotly/pandas.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.5
+numpy>=1.24
+sqlalchemy>=2.0
+pyjwt>=2.8
+email-validator>=2.0
+psycopg2-binary>=2.9
