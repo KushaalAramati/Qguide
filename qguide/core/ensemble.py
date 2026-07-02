@@ -30,6 +30,7 @@ from statistics import pstdev
 from typing import Dict, List
 
 from qguide.app.schemas import DesignRequest, EnsembleScore, Guide
+from qguide.core import outcome_modes
 
 # --------------------------------------------------------------------------- #
 # Goal weight profiles                                                          #
@@ -42,7 +43,7 @@ _OUTCOME_TO_GOAL = {
     "deletion": "knockout",
     "precise_edit": "precise_edit",
     "base_edit": "base_edit",
-    "prime_edit": "precise_edit",
+    "prime_edit": "prime_edit",
     "crispri": "regulation",
     "crispra": "regulation",
     "screen": "screen",
@@ -62,6 +63,11 @@ WEIGHT_PROFILES: Dict[str, Dict[str, float]] = {
         "on_target": 0.26, "desired_outcome": 0.20, "specificity": 0.20,
         "repair": 0.10, "genomic_context": 0.08, "cell_context": 0.06,
         "model_agreement": 0.10, "off_target": 0.32, "uncertainty": 0.14,
+    },
+    "prime_edit": {      # prime editing (provisional): like precise, specificity-heavy
+        "on_target": 0.24, "desired_outcome": 0.22, "specificity": 0.20,
+        "repair": 0.10, "genomic_context": 0.08, "cell_context": 0.06,
+        "model_agreement": 0.10, "off_target": 0.32, "uncertainty": 0.16,
     },
     "base_edit": {       # edit window position + bystander avoidance (provisional)
         "on_target": 0.20, "desired_outcome": 0.28, "specificity": 0.18,
@@ -101,43 +107,13 @@ def _weights(request: DesignRequest) -> Dict[str, float]:
 # --------------------------------------------------------------------------- #
 # Component computation                                                         #
 # --------------------------------------------------------------------------- #
-def _desired_outcome_score(guide: Guide, goal: str) -> float:
-    """Mode-aware 'does this guide achieve the intended outcome' score.
-
-    Knockout-family uses the (already objective-weighted) functional-disruption
-    score from the outcome model. The other modes are PROVISIONAL heuristics until
-    dedicated models (base/prime/CRISPRi-a/screen) are wired in.
-    """
-    o = guide.outcome
-    if goal in ("knockout", "screen"):
-        return o.functional_disruption_score
-    if goal == "precise_edit":
-        # precise edits want efficient cutting but NOT random frameshift dominance
-        return max(0.0, 0.6 * guide.scores.on_target + 0.4 * (1.0 - o.no_edit_prob))
-    if goal == "base_edit":
-        # provisional: reward central edit-window positioning + activity
-        window = 1.0 - abs(((guide.position + guide.end) / 2 % 20) - 6) / 14.0
-        return max(0.0, min(1.0, 0.5 * guide.scores.on_target + 0.5 * window))
-    if goal == "regulation":
-        # provisional: CRISPRi/a reward TSS proximity (proxy: distance-to-target term)
-        return max(0.0, 0.5 * guide.scores.on_target + 0.5 * guide.scores.distance_to_target)
-    return o.functional_disruption_score
-
-
-def _repair_outcome_score(guide: Guide, goal: str) -> float:
-    """Predicted repair outcome quality for the intended edit (NHEJ/MMEJ proxy)."""
-    o = guide.outcome
-    if goal in ("knockout", "screen"):
-        return o.frameshift_prob                      # frameshift = good for KO
-    if goal in ("precise_edit", "base_edit"):
-        return o.in_frame_indel_prob                  # predictable repair preferred
-    return o.functional_disruption_score
-
-
 def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
     goal = goal_for(request)
+    mode = outcome_modes.get_mode(goal)
     w = _weights(request)
     provisional: List[str] = ["genomic_context_score", "model_agreement_score"]
+    if mode.provisional:
+        provisional.append("desired_outcome_score")
 
     risk = guide.off_target.risk_score
     on_target = guide.scores.on_target
@@ -145,8 +121,8 @@ def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
     # specificity: distinct from aggregate safety once real CFD lands; for now a
     # seed-complexity proxy combined with the heuristic risk.
     specificity = max(0.0, min(1.0, 0.5 * guide.scores.complexity + 0.5 * (1.0 - risk)))
-    desired = _desired_outcome_score(guide, goal)
-    repair = _repair_outcome_score(guide, goal)
+    desired = max(0.0, min(1.0, mode.desired_outcome_score(guide)))
+    repair = max(0.0, min(1.0, mode.repair_outcome_score(guide)))
     genomic_context = guide.scores.distance_to_target   # PROVISIONAL: needs exon/coding annotation
     has_cell = bool(getattr(request, "cell_type", None))
     cell_context = min(1.0, guide.context.multiplier)
@@ -204,18 +180,17 @@ def score_guide(guide: Guide, request: DesignRequest) -> EnsembleScore:
         provisional=provisional,
         confidence_label=conf_label,
         goal_profile=f"{goal}_{getattr(request, 'risk_tolerance', 'balanced')}",
-        badges=_badges(guide, goal, conf_label, risk, final),
+        badges=_badges(guide, mode, conf_label, risk, final),
     )
 
 
-def _badges(guide: Guide, goal: str, conf: str, risk: float, final: float) -> List[str]:
+def _badges(guide: Guide, mode, conf: str, risk: float, final: float) -> List[str]:
     out = [f"{conf.title()} confidence"]
     if risk >= 0.4:
         out.append("High off-target concern")
-    if goal == "knockout" and guide.outcome.knockout_prob >= 0.6 and final >= 0.6:
-        out.append("Strong knockout candidate")
-    if goal == "screen":
-        out.append("Good screening candidate")
+    mb = mode.badge(guide, final)
+    if mb:
+        out.append(mb)
     return out
 
 

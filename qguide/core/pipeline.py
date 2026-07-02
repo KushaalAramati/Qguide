@@ -76,10 +76,16 @@ def run_design(request: DesignRequest) -> DesignResponse:
     # change once the UI consumes it.
     ensemble.score_guides(guides, request)
 
-    # Step 7 -- optimization (backend: classical SA or D-Wave dimod, per request)
-    optimizer = optimization.make_optimizer(getattr(request, "optimizer_backend", "sa"))
+    # Step 7 -- optimization. Three honest modes (classical / quantum_inspired /
+    # quantum_hardware); all solve the SAME QUBO. Legacy optimizer_backend still
+    # maps to a mode for backward compatibility.
+    req_mode = getattr(request, "optimizer_mode", None)
+    if not req_mode:
+        req_mode = "quantum_inspired" if getattr(request, "optimizer_backend", "sa") == "dwave" else "classical"
+    optimizer, resolved_mode, mode_notes = optimization.make_optimizer_for_mode(req_mode)
     opt_result = optimization.optimize_guide_set(
-        guides, set_size=request.set_size, optimizer=optimizer)
+        guides, set_size=request.set_size, optimizer=optimizer,
+        mode=resolved_mode, extra_notes=mode_notes)
     best_single = optimization.best_single_guide(guides)
 
     # Step 10 -- explanations

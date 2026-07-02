@@ -111,12 +111,31 @@ class MismatchBin(BaseModel):
     count: int
 
 
+class OffTargetHit(BaseModel):
+    """A single predicted off-target site (genome-backed or synthetic/heuristic)."""
+    locus: str = "synthetic"                   # e.g. "chr1:1,234,567" or a descriptor
+    position: int = -1
+    strand: str = "+"
+    mismatches: int = 0
+    mismatch_positions: List[int] = Field(default_factory=list)
+    pam: str = ""
+    cfd_score: float = 0.0                     # 0..1, CFD/MIT-style (placeholder for now)
+    annotation: str = "unknown"                # exon | promoter | enhancer | intron | intergenic
+    severity: RiskCategory = RiskCategory.LOW
+    explanation: str = ""
+    provisional: bool = True                    # True until genome-backed alignment is used
+
+
 class OffTargetReport(BaseModel):
     risk_score: float = 0.0                    # 0 (safe) .. 1 (dangerous)
     risk_category: RiskCategory = RiskCategory.LOW
     potential_off_target_count: int = 0
     mismatch_distribution: List[MismatchBin] = Field(default_factory=list)
     concerning_regions: List[Dict[str, object]] = Field(default_factory=list)
+    hits: List[OffTargetHit] = Field(default_factory=list)
+    aggregate_burden: float = 0.0              # severity-weighted total, not just count
+    genome_backed: bool = False
+    warning: str = ""
     method: str = "heuristic_v1"
 
 
@@ -209,9 +228,15 @@ class OptimizationResult(BaseModel):
     selected_guide_ids: List[str]
     objective_value: float
     method: str
+    mode: str = "classical"                    # classical | quantum_inspired | quantum_hardware
     iterations: int
     rejected_explanations: Dict[str, str] = Field(default_factory=dict)
     tradeoffs: List[str] = Field(default_factory=list)
+    # Top-N-by-individual-score vs the optimized set (the value of optimizing)
+    top_n_individual: List[str] = Field(default_factory=list)
+    expected_outcome_delta: float = 0.0        # optimized mean score - top-N mean score
+    off_target_delta: float = 0.0              # optimized mean risk - top-N mean risk
+    comparison_note: str = ""
 
 
 class DesignResponse(BaseModel):

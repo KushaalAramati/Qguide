@@ -19,6 +19,7 @@ from typing import List, Protocol
 from qguide.app.schemas import (
     Guide,
     MismatchBin,
+    OffTargetHit,
     OffTargetReport,
     RiskCategory,
 )
@@ -27,6 +28,37 @@ from qguide.app.schemas import (
 class OffTargetEngine(Protocol):
     """Replaceable off-target backend (heuristic now, alignment-based later)."""
     def analyze(self, guide: Guide) -> OffTargetReport: ...
+
+
+class GenomeAlignmentOffTargetEngine:
+    """Interface for the real, genome-backed engine (Stage 4 / future).
+
+    A production implementation would: build/load a genome index (BWA/Bowtie),
+    enumerate near-matches with mismatches and bulges, filter by PAM, score each
+    site with CFD/MIT, and annotate exon/promoter/enhancer/conserved overlap. Until
+    an index is configured it returns a clear "not available" report rather than
+    pretending — no fake genome hits.
+    """
+
+    method = "genome_alignment_v0"
+
+    def __init__(self, genome_index_path: str | None = None):
+        self.genome_index_path = genome_index_path
+
+    def available(self) -> bool:
+        return bool(self.genome_index_path)
+
+    def analyze(self, guide: Guide) -> OffTargetReport:
+        if not self.available():
+            return OffTargetReport(
+                genome_backed=False,
+                warning=("Genome-backed off-target analysis requires a reference "
+                         "genome index (BWA/Bowtie). None is configured, so no "
+                         "genome-wide off-target search was performed."),
+                method=self.method,
+            )
+        raise NotImplementedError(
+            "Genome alignment backend not yet implemented — configure an aligner + index.")
 
 
 def categorize(risk: float) -> RiskCategory:
@@ -88,6 +120,8 @@ class HeuristicOffTargetEngine:
         count = int(round(risk * 40))
         distribution = self._mismatch_distribution(count, risk)
         regions = self._concerning_regions(guide, count, risk)
+        hits = self._hits(guide, count, risk)
+        burden = round(sum(h.cfd_score for h in hits) + 0.02 * count, 4)
 
         report = OffTargetReport(
             risk_score=round(risk, 4),
@@ -95,9 +129,47 @@ class HeuristicOffTargetEngine:
             potential_off_target_count=count,
             mismatch_distribution=distribution,
             concerning_regions=regions,
+            hits=hits,
+            aggregate_burden=burden,
+            genome_backed=False,
+            warning=("Off-target sites are HEURISTIC estimates from intrinsic sequence "
+                     "features, not a genome search. Full genome-backed off-target "
+                     "analysis (BWA/Bowtie alignment + CFD/MIT scoring) requires a "
+                     "reference genome index, which is not configured."),
             method=self.method,
         )
         return report
+
+    @staticmethod
+    def _hits(guide: Guide, count: int, risk: float) -> List[OffTargetHit]:
+        """Synthetic per-hit report (clearly provisional). A genome-backed engine
+        would replace this with real aligned sites + CFD scores + annotations."""
+        if count == 0:
+            return []
+        strand = guide.strand if isinstance(guide.strand, str) else guide.strand.value
+        # Illustrative annotations, cycled so the UI has something to render.
+        annos = ["intergenic", "intron", "promoter", "exon", "enhancer"]
+        hits: List[OffTargetHit] = []
+        n = min(4, max(1, count // 6 + 1))
+        for i in range(n):
+            mm = i + 1                                   # 1,2,3,... mismatches
+            cfd = round(max(0.0, risk * (1.0 - 0.28 * mm)), 3)
+            sev = categorize(cfd)
+            anno = annos[(hash(guide.guide_id) + i) % len(annos)]
+            # coding/regulatory hits are more concerning than intergenic
+            if anno in ("exon", "promoter") and sev == RiskCategory.LOW:
+                sev = RiskCategory.MODERATE
+            L = len(guide.sequence)
+            mmpos = sorted({(i * 7 + 3) % L, (i * 5 + 11) % L}) if mm >= 1 else []
+            hits.append(OffTargetHit(
+                locus=f"chr?:synthetic_{i+1}", position=-1, strand=strand,
+                mismatches=mm, mismatch_positions=mmpos[:mm], pam=guide.pam,
+                cfd_score=cfd, annotation=anno, severity=sev,
+                explanation=(f"{mm}-mismatch candidate in a {anno} region; "
+                             f"heuristic CFD-style score {cfd:.2f}."),
+                provisional=True,
+            ))
+        return hits
 
     @staticmethod
     def _mismatch_distribution(count: int, risk: float) -> List[MismatchBin]:
@@ -168,12 +240,21 @@ def scale_report(report: OffTargetReport, factor: float) -> OffTargetReport:
             except (TypeError, ValueError):
                 pass
         regions.append(r2)
+    # Scale per-hit CFD scores + severities so the detailed report stays consistent.
+    hits = []
+    for h in report.hits:
+        cfd = round(min(1.0, h.cfd_score * factor), 3)
+        hits.append(h.model_copy(update={"cfd_score": cfd, "severity": categorize(cfd)}))
     return OffTargetReport(
         risk_score=round(new_risk, 4),
         risk_category=categorize(new_risk),
         potential_off_target_count=new_count,
         mismatch_distribution=dist,
         concerning_regions=regions,
+        hits=hits,
+        aggregate_burden=round(report.aggregate_burden * factor, 4),
+        genome_backed=report.genome_backed,
+        warning=report.warning,
         method=report.method + "+context",
     )
 

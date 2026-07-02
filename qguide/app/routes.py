@@ -23,7 +23,7 @@ ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").sp
 def is_admin(email: str) -> bool:
     return (email or "").strip().lower() in ADMIN_EMAILS
 from qguide.app.schemas import DesignRequest, DesignResponse, Guide
-from qguide.core import pipeline
+from qguide.core import optimization, pipeline
 from qguide.core.explainability import assumptions
 from qguide.core.guide_generator import CAS_PROFILES
 
@@ -129,6 +129,27 @@ def predict_experiment(payload: PredictExperimentRequest) -> Dict[str, object]:
         raise HTTPException(status_code=404, detail=f"Guide {payload.guide_id} not found.")
     return expsim.simulate_experiment(guide, n_cells=payload.n_cells,
                                       replicates=payload.replicates)
+
+
+@router.post("/report")
+def report(request: DesignRequest) -> Dict[str, object]:
+    """Structured scientific report for a design run (inputs, scores, set, warnings)."""
+    from qguide.core import report as report_mod
+    resp = pipeline.run_design(request)
+    return report_mod.build_report(resp)
+
+
+@router.post("/benchmark")
+def benchmark(request: DesignRequest) -> Dict[str, object]:
+    """Compare QGuide's outcome-first ranking against emulated tool-style baselines."""
+    from qguide.core import benchmark as bench_mod
+    resp = pipeline.run_design(request)
+    return bench_mod.benchmark(resp.guides)
+
+
+@router.get("/optimizer/modes")
+def optimizer_modes() -> Dict[str, str]:
+    return optimization.OPTIMIZER_MODES
 
 
 @router.get("/assumptions")
