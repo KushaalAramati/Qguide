@@ -3,7 +3,7 @@ import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
 
 export const metadata: Metadata = {
-  title: "Q-Guide — Quantum-assisted gRNA design",
+  title: "QGuide — Explainable CRISPR guide-RNA design",
   description: "Context-aware, explainable CRISPR guide RNA recommendation.",
 };
 

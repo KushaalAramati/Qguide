@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRequireAuth, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import { ValidationBanner } from "@/components/ValidationBanner";
 
 function NavLink({ href, icon, label, active }: { href: string; icon: string; label: string; active: boolean }) {
   return (
@@ -185,7 +186,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 p-6 max-w-[1500px]">{children}</main>
+      <main className="flex-1 min-w-0 p-6 max-w-[1500px]"><ValidationBanner />{children}</main>
     </div>
   );
 }

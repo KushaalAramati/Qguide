@@ -56,7 +56,7 @@ export default function LoginPage() {
         <div className="text-center mb-3">
           <div className="text-4xl">🧬</div>
           <div className="font-display font-extrabold text-3xl bg-gradient-to-r from-brand to-brand-light bg-clip-text text-transparent">Q-Guide</div>
-          <div className="text-muted text-sm">Quantum-assisted gRNA design</div>
+          <div className="text-muted text-sm">Explainable, outcome-first CRISPR guide design</div>
         </div>
         <Dna width={460} height={56} turns={5} />
         <div className="card mt-3">
