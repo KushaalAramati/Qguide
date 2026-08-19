@@ -19,6 +19,7 @@ from qguide.app.schemas import (
     Guide,
 )
 from qguide.core import (
+    biological_context,
     context_adjustment,
     ensemble,
     explainability,
@@ -26,6 +27,7 @@ from qguide.core import (
     off_target,
     optimization,
     outcome_prediction,
+    precision_score,
     scoring,
 )
 
@@ -75,6 +77,18 @@ def run_design(request: DesignRequest) -> DesignResponse:
     # now). Switching the primary ranking to ensemble.final_qguide_score is a one-line
     # change once the UI consumes it.
     ensemble.score_guides(guides, request)
+
+    # Step 6c -- deeper biological-context annotation (exon/domain/transcript/variant/
+    # chromatin/cell-context). The default provider fills only what it can defensibly
+    # derive and leaves the rest UNKNOWN (which lowers confidence, never fabricated).
+    biological_context.annotate_guides(guides, request)
+
+    # Step 6d -- QGuide Precision Score: the single transparent 0..1 score assembled from
+    # every named biological/contextual component, with the full breakdown attached.
+    prec_preset = getattr(request, "optimizer_preset", "balanced")
+    if prec_preset not in precision_score.preset_names():
+        prec_preset = "balanced"
+    precision_score.compute_precision_scores(guides, request, preset=prec_preset)
 
     # Step 7 -- optimization. Three honest modes (classical / quantum_inspired /
     # quantum_hardware); all solve the SAME QUBO. Legacy optimizer_backend still

@@ -1,7 +1,7 @@
 "use client";
 // Ensemble Breakdown (Feature 1) — every scoring variable, model contribution, weight.
 import { Card, CardTitle } from "@/components/ui";
-import { EnsemblePanel, EnsembleBadges } from "@/components/Ensemble";
+import { EnsemblePanel, EnsembleBadges, PrecisionPanel, OffTargetSeverityPanel, BioContextPanel } from "@/components/Ensemble";
 import { useProject } from "@/lib/projectCtx";
 
 const COLS: [string, string][] = [
@@ -24,11 +24,13 @@ export default function EnsembleBreakdown() {
           <thead><tr className="text-muted text-left text-xs uppercase">
             <th className="py-1 pr-3">Guide</th>
             {COLS.map(([, label]) => <th key={label} className="py-1 pr-3 whitespace-nowrap text-right">{label}</th>)}
+            <th className="py-1 pr-3 whitespace-nowrap text-right">Precision</th>
             <th className="py-1 pr-3">Conf.</th>
           </tr></thead>
           <tbody>
             {guides.map((x) => {
               const xe = x.ensemble || {};
+              const xp = x.precision || {};
               return (
                 <tr key={x.guide_id} className={`border-t border-border cursor-pointer ${x.guide_id === sel ? "bg-brand/5" : ""}`}
                   onClick={() => setSel(x.guide_id)}>
@@ -38,14 +40,27 @@ export default function EnsembleBreakdown() {
                       {typeof xe[field] === "number" ? xe[field].toFixed(2) : "—"}
                     </td>
                   ))}
-                  <td className="pr-3">{xe.confidence_label || "—"}</td>
+                  <td className="pr-3 text-right font-mono font-bold text-brand">
+                    {typeof xp.score === "number" ? xp.score.toFixed(2) : "—"}
+                  </td>
+                  <td className="pr-3">{xp.confidence_label || xe.confidence_label || "—"}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
-        <div className="text-[11px] text-muted mt-2">Click a guide to inspect its full breakdown. Off-safe = 1 − off-target risk. Uncert. lower is better.</div>
+        <div className="text-[11px] text-muted mt-2">Click a guide to inspect its full breakdown. Off-safe = 1 − off-target risk. Uncert. lower is better. Precision = the outcome-first QGuide Precision Score.</div>
       </Card>
+
+      {g?.precision?.components?.length > 0 && (
+        <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4 items-start">
+          <Card><PrecisionPanel p={g.precision} /></Card>
+          <div className="flex flex-col gap-4">
+            <Card><OffTargetSeverityPanel sev={g.off_target?.severity} /></Card>
+            <Card><BioContextPanel bc={g.bio_context} /></Card>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4 items-start">
         <Card>

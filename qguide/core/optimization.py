@@ -94,7 +94,14 @@ def compute_final_scores(guides: List[Guide]) -> List[Guide]:
 # --------------------------------------------------------------------------- #
 @dataclass
 class QuboWeights:
-    """Every QUBO term weight, fully configurable. Presets below tune these."""
+    """Every QUBO term weight, fully configurable. Presets below tune these.
+
+    The upgraded QUBO folds in the QGuide Precision Score and the deeper biological
+    variables (exon/transcript coverage, off-target severity, variant risk, missing-data
+    risk) on the diagonal, and adds explicit pairwise SYNERGY rewards (region/exon/domain
+    diversity, efficiency<->specificity balance, uncertainty & off-target decorrelation)
+    alongside the redundancy penalties. New sub-weights default to values that keep the
+    original behaviour when the new signals are absent."""
     # --- quality_i sub-weights (reward) ---
     q_on_target: float = 1.0
     q_desired_outcome: float = 1.0
@@ -103,20 +110,36 @@ class QuboWeights:
     q_repair: float = 0.7
     q_functional: float = 0.7
     q_model_agreement: float = 0.5
+    q_precision: float = 0.9          # NEW: reward the QGuide Precision Score directly
+    q_exon_importance: float = 0.5    # NEW: reward disrupting an important exon (proxy)
+    q_transcript_coverage: float = 0.4  # NEW: reward covering major isoforms (abstains if unknown)
     # --- risk_i sub-weights (penalty) ---
     r_off_target: float = 1.2
     r_uncertainty: float = 0.8
     r_context_risk: float = 0.4
+    r_severity: float = 0.8           # NEW: biological off-target severity
+    r_missing_data: float = 0.5       # NEW: penalise low data completeness
+    r_variant: float = 0.5            # NEW: SNP/variant conflict (abstains if unknown)
+    r_practicality: float = 0.4       # NEW: poor synthesis practicality (GC/repeats)
     # --- redundancy_ij sub-weights (pairwise penalty) ---
     d_position: float = 0.5
     d_sequence: float = 0.3
     d_cut_proximity: float = 0.2
     d_shared_offtarget: float = 0.3
+    d_correlated_uncertainty: float = 0.2   # NEW: both guides equally uncertain
+    d_isoform: float = 0.0            # NEW: both hit only the same minor isoform (abstains)
+    # --- synergy_ij sub-weights (pairwise REWARD) ---
+    b_region_diversity: float = 0.5
+    b_exon_diversity: float = 0.4
+    b_domain_diversity: float = 0.4
+    b_eff_spec_balance: float = 0.3
+    b_uncertainty_decorrelation: float = 0.3
+    b_offtarget_decorrelation: float = 0.4
     # --- top-level scales ---
     quality_scale: float = 1.0
     risk_scale: float = 1.0
     redundancy_penalty: float = 0.8
-    diversity_bonus: float = 0.0      # reward selecting diverse (low-redundancy) pairs
+    diversity_bonus: float = 0.0      # reward selecting diverse (high-synergy) pairs
     cardinality_penalty: float = 1.5  # lambda on (sum x - N)^2
 
 
@@ -128,19 +151,22 @@ PRESETS: Dict[str, QuboWeights] = {
         q_specificity=0.6, r_off_target=1.0),
     "max_specificity": QuboWeights(
         q_specificity=1.6, r_off_target=1.8, q_on_target=1.1,
-        d_shared_offtarget=0.6),
+        d_shared_offtarget=0.6, r_severity=1.4, b_offtarget_decorrelation=0.7),
     "min_uncertainty": QuboWeights(
         r_uncertainty=1.8, q_model_agreement=1.1, q_specificity=1.0,
-        r_off_target=1.1),
+        r_off_target=1.1, r_missing_data=1.0, b_uncertainty_decorrelation=0.6),
     "broad_coverage": QuboWeights(
         redundancy_penalty=1.6, diversity_bonus=0.5, d_position=0.7,
-        d_cut_proximity=0.4),
+        d_cut_proximity=0.4, q_transcript_coverage=0.9, b_region_diversity=0.9,
+        b_exon_diversity=0.7),
     "therapeutic_safety": QuboWeights(
         r_off_target=2.0, r_uncertainty=1.4, q_specificity=1.4,
-        d_shared_offtarget=0.6, cardinality_penalty=1.8),
+        d_shared_offtarget=0.6, cardinality_penalty=1.8, r_severity=1.6,
+        r_variant=1.0, r_missing_data=0.9),
     "screening_library": QuboWeights(
         q_model_agreement=1.2, redundancy_penalty=1.3, diversity_bonus=0.4,
-        q_on_target=1.2, r_uncertainty=1.0),
+        q_on_target=1.2, r_uncertainty=1.0, b_region_diversity=0.8,
+        r_practicality=0.7),
 }
 
 PRESET_INFO: Dict[str, str] = {
@@ -163,37 +189,79 @@ def get_weights(preset: str) -> QuboWeights:
 # --------------------------------------------------------------------------- #
 # Per-guide quality_i / risk_i (from the already-computed biological scores)     #
 # --------------------------------------------------------------------------- #
+def _blend(terms):
+    """Weighted mean over AVAILABLE (weight, value) pairs; abstained terms (value is
+    None) are dropped and their weight is renormalised away. Returns 0..1."""
+    num = mass = 0.0
+    for weight, value in terms:
+        if value is None or weight == 0.0:
+            continue
+        num += weight * max(0.0, min(1.0, value))
+        mass += weight
+    return max(0.0, min(1.0, num / mass)) if mass > 1e-9 else 0.0
+
+
 def quality_i(g: Guide, w: QuboWeights) -> float:
-    """Reward term: weighted blend of the positive biological signals (0..1)."""
+    """Reward term: weighted blend of the positive biological signals (0..1).
+
+    Folds in the QGuide Precision Score and the deeper biological variables when they
+    are available; unavailable signals abstain (weight renormalised away), so the term
+    degrades gracefully to the original blend."""
     e = g.ensemble
     on_t = e.on_target_score if e else g.scores.on_target
-    desired = e.desired_outcome_score if e else 0.0
+    desired = e.desired_outcome_score if e else None
     spec = e.specificity_score if e else max(0.0, 1.0 - g.off_target.risk_score)
-    repair = e.repair_outcome_score if e else 0.0
-    agree = e.model_agreement_score if e else 0.0
-    terms = (
-        w.q_on_target * on_t
-        + w.q_desired_outcome * desired
-        + w.q_knockout * g.outcome.knockout_prob
-        + w.q_specificity * spec
-        + w.q_repair * repair
-        + w.q_functional * g.outcome.functional_disruption_score
-        + w.q_model_agreement * agree
-    )
-    mass = (w.q_on_target + w.q_desired_outcome + w.q_knockout + w.q_specificity
-            + w.q_repair + w.q_functional + w.q_model_agreement)
-    return max(0.0, min(1.0, terms / max(mass, 1e-9)))
+    repair = e.repair_outcome_score if e else None
+    agree = e.model_agreement_score if e else None
+    prec = g.precision.score if (g.precision and g.precision.components) else None
+    bc = getattr(g, "bio_context", None)
+    exon = bc.exon_importance if bc else None
+    transcript = bc.transcript_coverage if bc else None
+    return _blend([
+        (w.q_on_target, on_t),
+        (w.q_desired_outcome, desired),
+        (w.q_knockout, g.outcome.knockout_prob),
+        (w.q_specificity, spec),
+        (w.q_repair, repair),
+        (w.q_functional, g.outcome.functional_disruption_score),
+        (w.q_model_agreement, agree),
+        (w.q_precision, prec),
+        (w.q_exon_importance, exon),
+        (w.q_transcript_coverage, transcript),
+    ])
 
 
 def risk_i(g: Guide, w: QuboWeights) -> float:
-    """Penalty term: weighted blend of off-target risk, uncertainty, risky context (0..1)."""
+    """Penalty term: weighted blend of off-target risk, severity, uncertainty, risky
+    context, missing-data risk, variant conflict and poor practicality (0..1)."""
     e = g.ensemble
     off = g.off_target.risk_score
-    unc = e.uncertainty_score if e else 0.0
+    sev = getattr(g.off_target, "severity", None)
+    severity = sev.severity_score if sev else None
+    unc = e.uncertainty_score if e else None
     ctx_risk = max(0.0, 1.0 - min(1.0, g.context.multiplier))
-    terms = w.r_off_target * off + w.r_uncertainty * unc + w.r_context_risk * ctx_risk
-    mass = w.r_off_target + w.r_uncertainty + w.r_context_risk
-    return max(0.0, min(1.0, terms / max(mass, 1e-9)))
+    bc = getattr(g, "bio_context", None)
+    variant = bc.variant_conflict_risk if bc else None
+    missing = (1.0 - g.precision.data_completeness) if (g.precision and g.precision.components) else None
+    practicality = _practicality_risk(g)
+    return _blend([
+        (w.r_off_target, off),
+        (w.r_severity, severity),
+        (w.r_uncertainty, unc),
+        (w.r_context_risk, ctx_risk),
+        (w.r_missing_data, missing),
+        (w.r_variant, variant),
+        (w.r_practicality, practicality),
+    ])
+
+
+def _practicality_risk(g: Guide) -> float:
+    """Synthesis/expression practicality risk from intrinsic sequence features."""
+    dev = abs(g.gc_content - 0.5)
+    gc_extreme = max(0.0, min(1.0, (dev - 0.2) / 0.25))
+    struct = getattr(g.scores, "secondary_structure_penalty", 0.0)
+    homo = getattr(g.scores, "homopolymer_penalty", 0.0)
+    return max(0.0, min(1.0, 0.5 * gc_extreme + 0.3 * homo + 0.2 * struct))
 
 
 # --------------------------------------------------------------------------- #
@@ -246,8 +314,18 @@ def _shared_offtarget(a: Guide, b: Guide) -> float:
     return len(aa & bb) / len(aa | bb)
 
 
+def _uncertainty_of(g: Guide) -> Optional[float]:
+    if g.ensemble and g.ensemble.uncertainty_score is not None:
+        return g.ensemble.uncertainty_score
+    if g.precision and g.precision.components:
+        return g.precision.uncertainty
+    return None
+
+
 def redundancy_ij(a: Guide, b: Guide, w: QuboWeights) -> float:
-    """Full pairwise redundancy: position, sequence, cut proximity, shared off-targets."""
+    """Full pairwise redundancy (penalty): positional/sequence/cut overlap, shared
+    off-target failure modes, correlated uncertainty, and (when isoform data exists)
+    both guides hitting only the same minor isoform. Abstained terms renormalise away."""
     overlap = max(0, min(a.end, b.end) - max(a.position, b.position))
     span = max(a.end - a.position, 1)
     pos_sim = overlap / span
@@ -256,10 +334,73 @@ def redundancy_ij(a: Guide, b: Guide, w: QuboWeights) -> float:
         seq_sim = sum(1 for x, y in zip(a.sequence, b.sequence) if x == y) / len(a.sequence)
     near = 1.0 if abs(a.cut_site - b.cut_site) < 10 else 0.0
     shared = _shared_offtarget(a, b)
-    val = (w.d_position * pos_sim + w.d_sequence * seq_sim
-           + w.d_cut_proximity * near + w.d_shared_offtarget * shared)
-    mass = w.d_position + w.d_sequence + w.d_cut_proximity + w.d_shared_offtarget
-    return max(0.0, min(1.0, val / max(mass, 1e-9)))
+    # correlated uncertainty: both guides carry similarly high uncertainty (a shared,
+    # not diversified, failure risk).
+    ua, ub = _uncertainty_of(a), _uncertainty_of(b)
+    corr_unc = (min(ua, ub) if (ua is not None and ub is not None) else None)
+    # isoform redundancy needs isoform coverage annotation (unknown here -> abstains).
+    isoform = None
+    return _blend([
+        (w.d_position, pos_sim),
+        (w.d_sequence, seq_sim),
+        (w.d_cut_proximity, near),
+        (w.d_shared_offtarget, shared),
+        (w.d_correlated_uncertainty, corr_unc),
+        (w.d_isoform, isoform),
+    ])
+
+
+def synergy_ij(a: Guide, b: Guide, w: QuboWeights) -> float:
+    """Pairwise SYNERGY (reward, 0..1): how much better the two guides are TOGETHER than
+    their redundancy would suggest -- region/exon/domain diversity, an efficiency<->
+    specificity balance, and decorrelated uncertainty & off-target failure modes.
+    Terms needing absent annotation abstain and renormalise away."""
+    # region diversity: complementary genomic positioning (inverse of positional overlap).
+    overlap = max(0, min(a.end, b.end) - max(a.position, b.position))
+    span = max(a.end - a.position, 1)
+    region_div = 1.0 - min(1.0, overlap / span)
+    # exon / domain diversity: only when both guides have the annotation.
+    exon_div = _bc_diversity(a, b, "exon_importance")
+    domain_div = _bc_diversity(a, b, "domain_disruption")
+    # efficiency<->specificity balance: reward a pair where one is strong on activity and
+    # the other on specificity (2*sqrt(peak spread)), so the set hedges both objectives.
+    ea, eb = a.ensemble, b.ensemble
+    if ea and eb:
+        act = [ea.on_target_score, eb.on_target_score]
+        spc = [ea.specificity_score, eb.specificity_score]
+        # high when the better-activity guide differs from the better-specificity guide
+        eff_spec = 1.0 if (act.index(max(act)) != spc.index(max(spc))) else 0.0
+        eff_spec = 0.5 * eff_spec + 0.5 * min(max(act), max(spc))
+    else:
+        eff_spec = None
+    # uncertainty decorrelation: reward pairing a confident guide with an uncertain one.
+    ua, ub = _uncertainty_of(a), _uncertainty_of(b)
+    unc_decorr = (1.0 - min(ua, ub)) if (ua is not None and ub is not None) else None
+    # off-target decorrelation: complement of shared off-target annotation classes.
+    off_decorr = 1.0 - _shared_offtarget(a, b)
+    return _blend([
+        (w.b_region_diversity, region_div),
+        (w.b_exon_diversity, exon_div),
+        (w.b_domain_diversity, domain_div),
+        (w.b_eff_spec_balance, eff_spec),
+        (w.b_uncertainty_decorrelation, unc_decorr),
+        (w.b_offtarget_decorrelation, off_decorr),
+    ])
+
+
+def _bc_diversity(a: Guide, b: Guide, field_name: str) -> Optional[float]:
+    """Synergy contribution from a biological-context field; ``None`` if either guide
+    lacks the annotation (so it abstains from the synergy blend).
+
+    With only a scalar importance per guide (no true per-exon/per-domain identity yet),
+    this rewards a pair where BOTH guides hit something important -- the mean importance.
+    A real gene-model provider would instead reward hitting *distinct* exons/domains;
+    that upgrade is a one-line change here once identities are available."""
+    va = getattr(getattr(a, "bio_context", None), field_name, None)
+    vb = getattr(getattr(b, "bio_context", None), field_name, None)
+    if va is None or vb is None:
+        return None
+    return max(0.0, min(1.0, (va + vb) / 2.0))
 
 
 def build_qubo(
@@ -284,7 +425,9 @@ def build_qubo(
         Q[(i, i)] = (-w.quality_scale * qi) + (w.risk_scale * ri) + P * (1 - 2 * k)
         for j in range(i + 1, n):
             red = redundancy_ij(guides[i], guides[j], w)
-            pair = w.redundancy_penalty * red - w.diversity_bonus * (1.0 - red)
+            syn = synergy_ij(guides[i], guides[j], w)
+            # penalise redundant pairs, reward synergistic (complementary) pairs.
+            pair = w.redundancy_penalty * red - w.diversity_bonus * syn
             Q[(i, j)] = pair + 2 * P
 
     return QUBO(linear_quadratic=Q, guide_ids=[g.guide_id for g in guides], set_size=set_size)

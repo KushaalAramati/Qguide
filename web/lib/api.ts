@@ -64,6 +64,13 @@ export const api = {
   project: (id: string) => req(`/projects/${id}`),
   deleteProject: (id: string) => req(`/projects/${id}`, { method: "DELETE" }),
   run: (request: any) => req("/run", { method: "POST", body: JSON.stringify({ request }) }),
+  // Formula / QUBO upgrade endpoints (free; no credit charge)
+  design: (request: any) => req("/design", { method: "POST", body: JSON.stringify(request) }),
+  precisionPresets: () => req("/precision/presets"),
+  optimizerCompare: (request: any, preset = "balanced", set_size?: number) =>
+    req("/optimizer/compare", { method: "POST", body: JSON.stringify({ request, preset, set_size }) }),
+  precisionExplain: (request: any, guide_id?: string) =>
+    req("/precision/explain", { method: "POST", body: JSON.stringify({ request, guide_id }) }),
   // Auth / account management
   changePassword: (current_password: string, new_password: string) =>
     req("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),

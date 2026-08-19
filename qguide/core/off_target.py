@@ -13,16 +13,33 @@ rest of Q-Guide is unchanged.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import List, Protocol
+
+
+def _stable_hash(s: str) -> int:
+    """Process-stable hash (unlike built-in ``hash``) for reproducible synthetic
+    annotations across runs, machines and deploys."""
+    return int(hashlib.md5(s.encode("utf-8")).hexdigest(), 16)
 
 from qguide.app.schemas import (
     Guide,
     MismatchBin,
     OffTargetHit,
     OffTargetReport,
+    OffTargetSeverity,
     RiskCategory,
 )
+
+# Biological weight of the genomic context an off-target lands in. A coding-exon hit
+# is far more consequential than an intergenic one. (Essential-gene / disease overlap
+# would multiply this further, but that needs a gene DB -- see severity_profile.)
+_LOCATION_WEIGHT = {
+    "exon": 1.0, "promoter": 0.85, "enhancer": 0.80,
+    "intron": 0.40, "intergenic": 0.20, "unknown": 0.50,
+}
+_SEED_LEN = 10  # PAM-proximal seed for SpCas9-like enzymes
 
 
 class OffTargetEngine(Protocol):
@@ -155,7 +172,10 @@ class HeuristicOffTargetEngine:
             mm = i + 1                                   # 1,2,3,... mismatches
             cfd = round(max(0.0, risk * (1.0 - 0.28 * mm)), 3)
             sev = categorize(cfd)
-            anno = annos[(hash(guide.guide_id) + i) % len(annos)]
+            # Deterministic annotation pick (Python's built-in hash() is per-process
+            # randomised, which made synthetic annotations — and thus severity / the
+            # QUBO's shared-off-target term — irreproducible across runs).
+            anno = annos[(_stable_hash(guide.guide_id) + i) % len(annos)]
             # coding/regulatory hits are more concerning than intergenic
             if anno in ("exon", "promoter") and sev == RiskCategory.LOW:
                 sev = RiskCategory.MODERATE
@@ -202,12 +222,90 @@ class HeuristicOffTargetEngine:
         return regions
 
 
+# --------------------------------------------------------------------------- #
+# Off-target SEVERITY (formula-upgrade brief, Part 2 item 9)                    #
+# --------------------------------------------------------------------------- #
+def severity_profile(report: OffTargetReport, spacer_len: int = 20) -> OffTargetSeverity:
+    """Aggregate a per-hit off-target report into a biological SEVERITY score.
+
+    Distinct from ``risk_score`` (a promiscuity magnitude): severity asks *how much
+    each predicted off-target would matter*, weighting where it lands (coding exon >
+    regulatory > intron > intergenic), whether the PAM-proximal seed is intact (a
+    seed mismatch largely disarms an off-target; a seed-intact hit is dangerous), and
+    the CFD-style activity. One severe coding hit dominates, plus cumulative burden.
+
+    Essential-gene / disease-gene overlap would raise this further but needs a gene
+    database; until one is configured ``essential_gene_hits`` is ``None`` (unknown).
+    """
+    hits = list(getattr(report, "hits", []) or [])
+    seed_start = max(0, spacer_len - _SEED_LEN)
+    if not hits:
+        return OffTargetSeverity(
+            severity_score=0.0, high_severity_count=0, coding_hits=0,
+            regulatory_hits=0, essential_gene_hits=None, seed_mismatch_hits=0,
+            worst_annotation="none", worst_cfd=0.0,
+            components={"max_hit": 0.0, "burden": 0.0, "location_weighted": 0.0},
+            provisional=not report.genome_backed,
+            note=("No predicted off-target hits to score." if report.genome_backed
+                  else "Severity computed over HEURISTIC (synthetic) hits — provisional "
+                       "until a genome-backed off-target search is configured."),
+        )
+
+    coding = regulatory = seed_mm = high = 0
+    hit_sevs: List[float] = []
+    worst_sev, worst_anno, worst_cfd = -1.0, "unknown", 0.0
+    for h in hits:
+        anno = (h.annotation or "unknown").lower()
+        loc_w = _LOCATION_WEIGHT.get(anno, 0.5)
+        if anno == "exon":
+            coding += 1
+        if anno in ("promoter", "enhancer"):
+            regulatory += 1
+        has_seed_mm = any(p >= seed_start for p in (h.mismatch_positions or []))
+        if has_seed_mm:
+            seed_mm += 1
+        # Seed mismatch disarms the off-target; a seed-intact hit stays dangerous.
+        seed_factor = 0.7 if has_seed_mm else 1.15
+        sev = max(0.0, min(1.0, float(h.cfd_score) * loc_w * seed_factor))
+        hit_sevs.append(sev)
+        if sev >= 0.5:
+            high += 1
+        if sev > worst_sev:
+            worst_sev, worst_anno, worst_cfd = sev, anno, float(h.cfd_score)
+
+    max_hit = max(hit_sevs)
+    burden = min(1.0, sum(hit_sevs) / 2.0)              # cumulative, saturating
+    location_weighted = sum(hit_sevs) / len(hit_sevs)
+    severity = max(0.0, min(1.0, 0.7 * max_hit + 0.3 * burden))
+
+    return OffTargetSeverity(
+        severity_score=round(severity, 4),
+        high_severity_count=high,
+        coding_hits=coding,
+        regulatory_hits=regulatory,
+        essential_gene_hits=None,                        # honest: no essential/disease DB
+        seed_mismatch_hits=seed_mm,
+        worst_annotation=worst_anno,
+        worst_cfd=round(worst_cfd, 4),
+        components={
+            "max_hit": round(max_hit, 4),
+            "burden": round(burden, 4),
+            "location_weighted": round(location_weighted, 4),
+        },
+        provisional=not report.genome_backed,
+        note=("Severity is a location/seed/CFD-weighted aggregate of the predicted "
+              "off-target hits. Essential-gene & disease-gene overlap is UNKNOWN "
+              "(no gene database configured)."),
+    )
+
+
 # Default singleton engine used by the pipeline.
 DEFAULT_ENGINE: OffTargetEngine = HeuristicOffTargetEngine()
 
 
 def analyze_off_target(guide: Guide, engine: OffTargetEngine = DEFAULT_ENGINE) -> Guide:
     guide.off_target = engine.analyze(guide)
+    guide.off_target.severity = severity_profile(guide.off_target, len(guide.sequence))
     if guide.off_target.risk_category == RiskCategory.HIGH:
         guide.warnings.append("High predicted off-target risk -- validate empirically.")
     return guide
@@ -245,7 +343,7 @@ def scale_report(report: OffTargetReport, factor: float) -> OffTargetReport:
     for h in report.hits:
         cfd = round(min(1.0, h.cfd_score * factor), 3)
         hits.append(h.model_copy(update={"cfd_score": cfd, "severity": categorize(cfd)}))
-    return OffTargetReport(
+    scaled = OffTargetReport(
         risk_score=round(new_risk, 4),
         risk_category=categorize(new_risk),
         potential_off_target_count=new_count,
@@ -257,6 +355,9 @@ def scale_report(report: OffTargetReport, factor: float) -> OffTargetReport:
         warning=report.warning,
         method=report.method + "+context",
     )
+    # Recompute severity over the context-scaled hits so it stays consistent.
+    scaled.severity = severity_profile(scaled)
+    return scaled
 
 
 # --------------------------------------------------------------------------- #

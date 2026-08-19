@@ -23,7 +23,13 @@ ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").sp
 def is_admin(email: str) -> bool:
     return (email or "").strip().lower() in ADMIN_EMAILS
 from qguide.app.schemas import DesignRequest, DesignResponse, Guide
-from qguide.core import optimization, pipeline
+from qguide.core import (
+    formula_explainer,
+    optimization,
+    pipeline,
+    precision_score,
+    quantum_comparison_report,
+)
 from qguide.core.explainability import assumptions
 from qguide.core.guide_generator import CAS_PROFILES
 
@@ -161,6 +167,60 @@ def optimizer_presets() -> Dict[str, Dict]:
                "weights": asdict(w)}
         for name, w in optimization.PRESETS.items()
     }
+
+
+@router.get("/precision/presets")
+def precision_presets() -> Dict[str, Dict]:
+    """QGuide Precision Score weight presets: name -> {positive, penalty} weight maps."""
+    out: Dict[str, Dict] = {}
+    for name in precision_score.preset_names():
+        w = precision_score.get_weights(name)
+        out[name] = {"positive": w.positive, "penalty": w.penalty}
+    return out
+
+
+class CompareBody(BaseModel):
+    request: DesignRequest
+    set_size: Optional[int] = None
+    preset: str = "balanced"
+
+
+@router.post("/optimizer/compare")
+def optimizer_compare(body: CompareBody) -> Dict[str, object]:
+    """Top-N vs classical vs quantum-inspired guide-set comparison, plus a plain-English
+    set explanation. Free (no credit) — mirrors /design. Honest about the quantum layer."""
+    if not body.request.sequence.strip():
+        raise HTTPException(status_code=400, detail="Empty sequence.")
+    resp = pipeline.run_design(body.request)
+    if not resp.guides:
+        raise HTTPException(status_code=400, detail="No guides found for this sequence / PAM.")
+    set_size = body.set_size or body.request.set_size
+    preset = body.preset or getattr(body.request, "optimizer_preset", "balanced")
+    comparison = quantum_comparison_report.compare_selection_strategies(
+        resp.guides, resp.request, set_size=set_size, preset=preset)
+    explanation = formula_explainer.explain_set(resp.guides, comparison, preset=preset)
+    return {"comparison": comparison, "set_explanation": explanation}
+
+
+class ExplainBody(BaseModel):
+    request: DesignRequest
+    guide_id: Optional[str] = None      # defaults to the top-ranked guide
+
+
+@router.post("/precision/explain")
+def precision_explain(body: ExplainBody) -> Dict[str, object]:
+    """Formula-level explanation of a guide's QGuide Precision Score (why high/low,
+    which variables helped/hurt, what data was missing, what to validate)."""
+    if not body.request.sequence.strip():
+        raise HTTPException(status_code=400, detail="Empty sequence.")
+    resp = pipeline.run_design(body.request)
+    if not resp.guides:
+        raise HTTPException(status_code=400, detail="No guides found for this sequence / PAM.")
+    guide = (next((g for g in resp.guides if g.guide_id == body.guide_id), None)
+             if body.guide_id else resp.guides[0])
+    if guide is None:
+        raise HTTPException(status_code=404, detail=f"Guide {body.guide_id} not found.")
+    return formula_explainer.explain_precision(guide)
 
 
 @router.get("/assumptions")

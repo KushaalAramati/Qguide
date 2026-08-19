@@ -1,7 +1,146 @@
 "use client";
 import { BarRow, CardTitle, Pill } from "./ui";
 
-const PURPLE = "#7A33A6", BLUE = "#9B59B6", AMBER = "#C9892F";
+const PURPLE = "#7A33A6", BLUE = "#9B59B6", AMBER = "#C9892F", RED = "#B4453A";
+
+// --------------------------------------------------------------------------- //
+// QGuide Precision Score — the new outcome-first individual score              //
+// --------------------------------------------------------------------------- //
+function SourceBadge({ source }: { source: string }) {
+  const map: Record<string, string> = {
+    real: "bg-brand/10 text-brand",
+    heuristic: "bg-warn/15 text-[#9A6818]",
+    proxy: "bg-warn/15 text-[#9A6818]",
+    provisional: "bg-warn/15 text-[#9A6818]",
+    unknown: "bg-bg text-muted",
+  };
+  return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${map[source] || "bg-bg text-muted"}`}>{source}</span>;
+}
+
+function ComponentRow({ c }: { c: any }) {
+  const positive = c.group === "positive";
+  if (!c.available) {
+    return (
+      <div className="flex items-center gap-2 text-sm py-0.5 opacity-70">
+        <span className="flex-1 truncate" title={c.note}>{c.label}</span>
+        <SourceBadge source="unknown" />
+        <span className="w-16 text-right text-[11px] text-muted italic">abstains</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-sm py-0.5" title={c.note}>
+      <span className="flex-1 truncate">{c.label}</span>
+      <SourceBadge source={c.source} />
+      <div className="w-24 h-2 rounded-full bg-bg overflow-hidden">
+        <div className="h-full rounded-full"
+          style={{ width: `${Math.max(0, Math.min(100, (c.raw ?? 0) * 100))}%`, background: positive ? PURPLE : AMBER }} />
+      </div>
+      <span className="w-9 text-right font-mono text-[11px]">{(c.raw ?? 0).toFixed(2)}</span>
+      <span className={`w-12 text-right font-mono text-[11px] ${c.contribution >= 0 ? "text-brand" : "text-[#B4453A]"}`}>
+        {c.contribution >= 0 ? "+" : ""}{Number(c.contribution).toFixed(3)}
+      </span>
+    </div>
+  );
+}
+
+export function PrecisionPanel({ p }: { p: any }) {
+  if (!p || !Array.isArray(p.components) || p.components.length === 0) return null;
+  const positives = p.components.filter((c: any) => c.group === "positive" && c.available)
+    .sort((a: any, b: any) => b.contribution - a.contribution);
+  const penalties = p.components.filter((c: any) => c.group === "penalty" && c.available)
+    .sort((a: any, b: any) => a.contribution - b.contribution);
+  const abstained = p.components.filter((c: any) => !c.available);
+  const confKind = p.confidence_label === "high" ? "good" : p.confidence_label === "low" ? "bad" : "warn";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <CardTitle>QGuide Precision Score</CardTitle>
+        <span className="text-lg font-extrabold text-brand">{Number(p.score).toFixed(3)}</span>
+      </div>
+      <div className="flex items-center gap-2 text-xs text-muted mb-2">
+        <Pill value={`${p.confidence_label} confidence`} kind={confKind as any} />
+        <span>data completeness <b>{Math.round((p.data_completeness ?? 0) * 100)}%</b></span>
+        <span>· uncertainty <b>{Number(p.uncertainty ?? 0).toFixed(2)}</b></span>
+      </div>
+
+      <div className="label mt-2 mb-0.5">Positive drivers</div>
+      {positives.map((c: any) => <ComponentRow key={c.key} c={c} />)}
+
+      <div className="label mt-3 mb-0.5">Penalties</div>
+      {penalties.map((c: any) => <ComponentRow key={c.key} c={c} />)}
+
+      {abstained.length > 0 && (
+        <>
+          <div className="label mt-3 mb-0.5">Abstained — no data (raises uncertainty, never guessed)</div>
+          {abstained.map((c: any) => <ComponentRow key={c.key} c={c} />)}
+        </>
+      )}
+
+      {p.rationale && (
+        <div className="text-[12px] text-ink bg-bg rounded-lg p-2 mt-3">{p.rationale}</div>
+      )}
+      <div className="text-[10px] text-muted mt-2">
+        Score = (Σ positive − Σ penalty) / available positive weight. Unavailable components
+        abstain and raise uncertainty rather than being fabricated. Preset: <b>{p.preset}</b>.
+      </div>
+    </div>
+  );
+}
+
+export function OffTargetSeverityPanel({ sev }: { sev: any }) {
+  if (!sev) return null;
+  const kind = sev.severity_score >= 0.5 ? "bad" : sev.severity_score >= 0.25 ? "warn" : "good";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <CardTitle>Off-target severity</CardTitle>
+        <Pill value={Number(sev.severity_score).toFixed(2)} kind={kind as any} />
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+        <div>Coding-exon hits <b>{sev.coding_hits}</b></div>
+        <div>Promoter/enhancer hits <b>{sev.regulatory_hits}</b></div>
+        <div>High-severity hits <b>{sev.high_severity_count}</b></div>
+        <div>Seed-mismatch hits <b>{sev.seed_mismatch_hits}</b></div>
+        <div>Worst region <b>{sev.worst_annotation}</b></div>
+        <div>Essential-gene hits <b>{sev.essential_gene_hits ?? "unknown"}</b></div>
+      </div>
+      <div className="text-[10px] text-muted mt-2">
+        Severity weights location, PAM-proximal seed mismatches and CFD — distinct from raw
+        off-target count. Essential/disease-gene overlap is unknown (no gene DB). {sev.provisional ? "Provisional (heuristic hits)." : ""}
+      </div>
+    </div>
+  );
+}
+
+export function BioContextPanel({ bc }: { bc: any }) {
+  if (!bc) return null;
+  const FIELDS: [string, string][] = [
+    ["exon_importance", "Exon importance"], ["domain_disruption", "Domain disruption"],
+    ["transcript_coverage", "Transcript coverage"], ["conservation", "Conservation"],
+    ["variant_conflict_risk", "Variant/SNP conflict"], ["chromatin_accessibility", "Chromatin accessibility"],
+    ["cell_context_confidence", "Cell-context confidence"],
+  ];
+  return (
+    <div>
+      <CardTitle>Biological context</CardTitle>
+      <div className="text-xs text-muted mb-2">Provider: <b>{bc.provider}</b>. Unknown fields abstain (lower confidence, never fabricated).</div>
+      {FIELDS.map(([k, label]) => {
+        const v = bc[k];
+        const src = (bc.sources || {})[k] || "unknown";
+        return (
+          <div key={k} className="flex items-center gap-2 text-sm py-0.5">
+            <span className="flex-1 truncate">{label}</span>
+            <SourceBadge source={src} />
+            <span className="w-14 text-right font-mono text-[11px]">
+              {v == null ? <span className="text-muted italic">unknown</span> : Number(v).toFixed(2)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 const TASK_LABEL: Record<string, string> = {
   on_target: "On-target activity", specificity: "Specificity", repair: "Repair outcome",

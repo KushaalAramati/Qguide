@@ -98,6 +98,91 @@ class EnsembleScore(BaseModel):
 
 
 # --------------------------------------------------------------------------- #
+# QGuide Precision Score (Part 1 of the formula-upgrade brief)                 #
+# --------------------------------------------------------------------------- #
+class PrecisionComponent(BaseModel):
+    """One transparent term of the QGuide Precision Score.
+
+    Every component records its raw 0..1 value, the weight applied, the signed
+    weighted contribution, whether it was AVAILABLE (real/proxy data) or had to
+    abstain (unknown), and an honest `source` label so the UI can colour-code it.
+    """
+    key: str
+    label: str
+    group: str = "positive"                # positive | penalty
+    raw: Optional[float] = None            # 0..1 (None => unavailable / abstained)
+    weight: float = 0.0
+    contribution: float = 0.0              # signed, actually applied to the score
+    available: bool = True
+    source: str = "heuristic"              # real | heuristic | proxy | provisional | unknown
+    note: str = ""
+
+
+class PrecisionScore(BaseModel):
+    """The QGuide Precision Score: a single 0..1 number assembled from many named,
+    reweightable biological/contextual components, with the full breakdown exposed.
+
+    Unavailable components ABSTAIN (they are dropped from the weighted mean and the
+    remaining weights are renormalised) and instead raise `uncertainty` / lower
+    `data_completeness` -- QGuide never invents a number for missing annotation.
+    """
+    score: float = 0.0                     # 0..1 QGuide Precision Score
+    confidence_label: str = "medium"       # high | medium | low
+    uncertainty: float = 0.0               # 0 = confident, 1 = very uncertain
+    data_completeness: float = 1.0         # fraction of components with real/proxy data
+    positive_mass: float = 0.0             # sum of applied positive weights
+    penalty_mass: float = 0.0              # sum of applied penalty weights
+    components: List[PrecisionComponent] = Field(default_factory=list)
+    missing: List[str] = Field(default_factory=list)       # unavailable component keys
+    provisional: List[str] = Field(default_factory=list)   # available-but-heuristic/proxy keys
+    preset: str = "balanced"
+    rationale: str = ""
+
+
+class BiologicalContext(BaseModel):
+    """Deeper biological variables most guide tools do not combine (Part 2).
+
+    Each field is 0..1 or ``None`` (unknown). ``None`` is the HONEST default when no
+    gene model / annotation / variant DB is configured -- it lowers confidence rather
+    than fabricating precision. `sources` records how each field was derived
+    (real | proxy | unknown) and `provider` names the annotation backend.
+    """
+    exon_importance: Optional[float] = None          # higher = more disruptive exon
+    domain_disruption: Optional[float] = None        # higher = hits functional domain
+    transcript_coverage: Optional[float] = None      # fraction of major isoforms affected
+    conservation: Optional[float] = None             # higher = more conserved target
+    variant_conflict_risk: Optional[float] = None    # higher = SNP/variant overlaps guide
+    chromatin_accessibility: Optional[float] = None  # higher = more accessible region
+    cell_context_confidence: Optional[float] = None  # model<->cell-type match confidence
+    sources: Dict[str, str] = Field(default_factory=dict)   # field -> real|proxy|unknown
+    notes: List[str] = Field(default_factory=list)
+    provider: str = "null_v0"
+    available: bool = False                          # True if ANY field was populated
+
+
+class OffTargetSeverity(BaseModel):
+    """Biological SEVERITY of predicted off-targets, distinct from raw risk count.
+
+    Not all off-targets are equal: a 2-mismatch hit in a coding exon of an essential
+    gene matters far more than a 3-mismatch intergenic hit. This aggregates the
+    per-hit report into a severity score that weights location, seed-region
+    mismatches, PAM strength and mismatch count. Essential-gene / disease overlap
+    needs a gene database -- until one is configured that count is ``None`` (unknown).
+    """
+    severity_score: float = 0.0            # 0..1 aggregate biological severity
+    high_severity_count: int = 0
+    coding_hits: int = 0                    # exon-annotated hits
+    regulatory_hits: int = 0               # promoter/enhancer-annotated hits
+    essential_gene_hits: Optional[int] = None   # None => essential/disease DB unavailable
+    seed_mismatch_hits: int = 0            # hits with a PAM-proximal (seed) mismatch
+    worst_annotation: str = "unknown"
+    worst_cfd: float = 0.0
+    components: Dict[str, float] = Field(default_factory=dict)
+    provisional: bool = True
+    note: str = ""
+
+
+# --------------------------------------------------------------------------- #
 # Sub-reports attached to each guide                                           #
 # --------------------------------------------------------------------------- #
 class ScoreBreakdown(BaseModel):
@@ -152,6 +237,7 @@ class OffTargetReport(BaseModel):
     concerning_regions: List[Dict[str, object]] = Field(default_factory=list)
     hits: List[OffTargetHit] = Field(default_factory=list)
     aggregate_burden: float = 0.0              # severity-weighted total, not just count
+    severity: Optional["OffTargetSeverity"] = None  # biological severity aggregation
     genome_backed: bool = False
     warning: str = ""
     method: str = "heuristic_v1"
@@ -201,6 +287,8 @@ class Guide(BaseModel):
     final_score: float = 0.0
     final_breakdown: Dict[str, float] = Field(default_factory=dict)
     ensemble: EnsembleScore = Field(default_factory=EnsembleScore)
+    precision: PrecisionScore = Field(default_factory=PrecisionScore)   # QGuide Precision Score
+    bio_context: BiologicalContext = Field(default_factory=BiologicalContext)
     confidence: float = 0.0
     warnings: List[str] = Field(default_factory=list)
     explanation: str = ""
