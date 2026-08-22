@@ -117,6 +117,35 @@ def _repetitive_motifs(seq: str) -> float:
     return score
 
 
+def _gc_richness(seq: str) -> float:
+    """GC-rich spacers have many more near-identical genomic sites, so they are more
+    promiscuous (the VEGFA-site-1 failure mode). 0 below ~55% GC, ramps to 1 at 100%.
+
+    This is an intrinsic *correlate* of genome-wide promiscuity, not a genome search --
+    it does not replace alignment, but it stops the heuristic from calling a GC-rich,
+    poly-G guide "specific" just because its seed happens to be non-repetitive."""
+    if not seq:
+        return 0.0
+    gc = sum(1 for b in seq if b in "GC") / len(seq)
+    return max(0.0, min(1.0, (gc - 0.55) / 0.45))
+
+
+def _longest_base_run(seq: str) -> int:
+    best = run = 0
+    prev = ""
+    for b in seq:
+        run = run + 1 if b == prev else 1
+        best = max(best, run)
+        prev = b
+    return best
+
+
+def _homopolymer_risk(seq: str) -> float:
+    """Long single-base runs (esp. poly-G/poly-C) are hallmarks of promiscuous,
+    hard-to-target spacers. 0 for runs <=3, ramps up beyond."""
+    return max(0.0, min(1.0, (_longest_base_run(seq) - 3) / 4.0))
+
+
 class HeuristicOffTargetEngine:
     """Default V1 engine -- no external dependencies."""
 
@@ -127,10 +156,18 @@ class HeuristicOffTargetEngine:
         seed = _seed_repetitiveness(seq)
         lowc = _low_complexity(seq)
         rep = _repetitive_motifs(seq)
+        gc_rich = _gc_richness(seq)
+        homo = _homopolymer_risk(seq)
 
-        # Weighted blend -> 0 (safe) .. 1 (dangerous). Seed weighted highest
-        # because PAM-proximal mismatches dominate SpCas9 specificity.
-        risk = min(1.0, 0.45 * seed + 0.35 * lowc + 0.20 * rep)
+        # Weighted blend -> 0 (safe) .. 1 (dangerous). Reweighted after validation
+        # against GUIDE-seq (Tsai 2015): the old formula leaned so hard on seed
+        # repetitiveness that it ranked the promiscuous poly-G VEGFA-site-1 guide as
+        # SAFER than the cleaner EMX1 guide -- backwards vs measured data. GC-richness
+        # and long single-base runs are now first-class terms (real intrinsic
+        # correlates of genome-wide promiscuity). This is still a HEURISTIC, not a
+        # genome search; genome-backed CFD remains required for true specificity.
+        risk = min(1.0, 0.25 * seed + 0.20 * lowc + 0.20 * rep
+                        + 0.20 * gc_rich + 0.15 * homo)
         category = categorize(risk)
 
         # Synthesise a count + mismatch distribution from the risk magnitude.
@@ -149,10 +186,13 @@ class HeuristicOffTargetEngine:
             hits=hits,
             aggregate_burden=burden,
             genome_backed=False,
-            warning=("Off-target sites are HEURISTIC estimates from intrinsic sequence "
-                     "features, not a genome search. Full genome-backed off-target "
-                     "analysis (BWA/Bowtie alignment + CFD/MIT scoring) requires a "
-                     "reference genome index, which is not configured."),
+            warning=("Off-target risk is a HEURISTIC estimate from intrinsic sequence "
+                     "features (seed repetitiveness, low complexity, tandem repeats, "
+                     "GC-richness and homopolymer runs — the last two added after "
+                     "GUIDE-seq validation). It is NOT a genome search and does not count "
+                     "real genomic off-targets. Full genome-backed analysis (BWA/Bowtie "
+                     "alignment + CFD/MIT scoring) requires a reference genome index, "
+                     "which is not configured."),
             method=self.method,
         )
         return report

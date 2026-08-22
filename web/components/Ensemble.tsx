@@ -1,20 +1,25 @@
 "use client";
 import { BarRow, CardTitle, Pill } from "./ui";
+import type { Tone } from "./ui";
 
-const PURPLE = "#7A33A6", BLUE = "#9B59B6", AMBER = "#C9892F", RED = "#B4453A";
+// Tones, not hexes: the palette lives in the theme tokens so both modes track it.
+const ACCENT = "accent" as const;   // the score you act on
+const SERIES = "series" as const;   // neutral quantitative context
+const AMBER  = "warn" as const;     // provisional / medium
+const RED    = "bad" as const;      // high risk
 
 // --------------------------------------------------------------------------- //
 // QGuide Precision Score — the new outcome-first individual score              //
 // --------------------------------------------------------------------------- //
 function SourceBadge({ source }: { source: string }) {
   const map: Record<string, string> = {
-    real: "bg-brand/10 text-brand",
-    heuristic: "bg-warn/15 text-[#9A6818]",
-    proxy: "bg-warn/15 text-[#9A6818]",
-    provisional: "bg-warn/15 text-[#9A6818]",
-    unknown: "bg-bg text-muted",
+    real: "kind-real",
+    heuristic: "kind-prov",
+    proxy: "kind-prov",
+    provisional: "kind-prov",
+    unknown: "kind-na",
   };
-  return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${map[source] || "bg-bg text-muted"}`}>{source}</span>;
+  return <span className={`${map[source] || "kind-na"} ml-0`}>{source}</span>;
 }
 
 function ComponentRow({ c }: { c: any }) {
@@ -32,12 +37,13 @@ function ComponentRow({ c }: { c: any }) {
     <div className="flex items-center gap-2 text-sm py-0.5" title={c.note}>
       <span className="flex-1 truncate">{c.label}</span>
       <SourceBadge source={c.source} />
-      <div className="w-24 h-2 rounded-full bg-bg overflow-hidden">
-        <div className="h-full rounded-full"
-          style={{ width: `${Math.max(0, Math.min(100, (c.raw ?? 0) * 100))}%`, background: positive ? PURPLE : AMBER }} />
+      <div className="w-24 h-[6px] bg-track overflow-hidden">
+        <div
+          style={{ width: `${Math.max(0, Math.min(100, (c.raw ?? 0) * 100))}%` }}
+          className={`h-full ${positive ? "bg-brand" : "bg-warn"}`} />
       </div>
       <span className="w-9 text-right font-mono text-[11px]">{(c.raw ?? 0).toFixed(2)}</span>
-      <span className={`w-12 text-right font-mono text-[11px] ${c.contribution >= 0 ? "text-brand" : "text-[#B4453A]"}`}>
+      <span className={`w-12 text-right font-mono text-[11px] ${c.contribution >= 0 ? "text-brand" : "text-bad"}`}>
         {c.contribution >= 0 ? "+" : ""}{Number(c.contribution).toFixed(3)}
       </span>
     </div>
@@ -56,7 +62,7 @@ export function PrecisionPanel({ p }: { p: any }) {
     <div>
       <div className="flex items-center justify-between mb-1">
         <CardTitle>QGuide Precision Score</CardTitle>
-        <span className="text-lg font-extrabold text-brand">{Number(p.score).toFixed(3)}</span>
+        <span className="text-[17px] text-brand tabular-nums tracking-tightest">{Number(p.score).toFixed(3)}</span>
       </div>
       <div className="flex items-center gap-2 text-xs text-muted mb-2">
         <Pill value={`${p.confidence_label} confidence`} kind={confKind as any} />
@@ -182,15 +188,15 @@ function ModelBreakdown({ e }: { e: any }) {
   );
 }
 
-const COMPONENT_LABELS: [string, string, string][] = [
-  // [ensemble field, label, color]
-  ["on_target_score", "On-target", PURPLE],
-  ["desired_outcome_score", "Desired outcome", PURPLE],
-  ["off_target_score", "Off-target safety", PURPLE],
-  ["specificity_score", "Specificity", BLUE],
-  ["repair_outcome_score", "Repair outcome", BLUE],
-  ["genomic_context_score", "Genomic context", BLUE],
-  ["cell_context_score", "Cell context", BLUE],
+const COMPONENT_LABELS: [string, string, Tone][] = [
+  // [ensemble field, label, tone]
+  ["on_target_score", "On-target", ACCENT],
+  ["desired_outcome_score", "Desired outcome", ACCENT],
+  ["off_target_score", "Off-target safety", ACCENT],
+  ["specificity_score", "Specificity", SERIES],
+  ["repair_outcome_score", "Repair outcome", SERIES],
+  ["genomic_context_score", "Genomic context", SERIES],
+  ["cell_context_score", "Cell context", SERIES],
   ["model_agreement_score", "Model agreement", AMBER],
 ];
 
@@ -215,23 +221,23 @@ export function EnsemblePanel({ e }: { e: any }) {
     <div>
       <div className="flex items-center justify-between mb-1">
         <CardTitle>Ensemble breakdown</CardTitle>
-        <span className="text-sm font-extrabold text-brand">
+        <span className="text-[13px] text-brand tabular-nums">
           QGuide score {e.final_qguide_score?.toFixed(3)}
         </span>
       </div>
       <div className="text-xs text-muted mb-2">Goal profile: <b>{e.goal_profile}</b> · confidence{" "}
         <b>{e.confidence_label}</b></div>
-      {COMPONENT_LABELS.map(([field, label, color]) => (
+      {COMPONENT_LABELS.map(([field, label, tone]) => (
         <div key={field} className="flex items-center gap-1">
           <div className="flex-1">
-            <BarRow label={label} value={e[field] ?? 0} color={color} />
+            <BarRow label={label} value={e[field] ?? 0} tone={tone} />
           </div>
           {prov.has(field) && <span className="text-[10px] text-warn font-bold" title="Provisional / placeholder component">prov</span>}
         </div>
       ))}
-      <BarRow label="Uncertainty" value={e.uncertainty_score ?? 0} color={AMBER} />
+      <BarRow label="Uncertainty" value={e.uncertainty_score ?? 0} tone={AMBER} />
       {e.rationale && (
-        <div className="text-[12px] text-ink bg-bg rounded-lg p-2 mt-2">{e.rationale}</div>
+        <div className="text-[11.5px] text-cell bg-well border border-divider p-2 mt-2 leading-relaxed">{e.rationale}</div>
       )}
       <ModelBreakdown e={e} />
       {Array.isArray(e.limitations) && e.limitations.length > 0 && (
@@ -261,7 +267,7 @@ export function OffTargetHits({ report }: { report: any }) {
         <span className="text-xs text-muted">burden {report.aggregate_burden?.toFixed(2)}</span>
       </div>
       {report.warning && (
-        <div className="text-[11px] rounded-lg bg-amber-50 border border-warn/30 text-[#8a5a12] p-2 my-2">
+        <div className="text-[10.5px] bg-warn/[0.06] border border-warn/30 text-warn p-2 my-2">
           ⚠ {report.warning}
         </div>
       )}
@@ -298,7 +304,7 @@ function SetMetric({ label, value, hint }: { label: string; value: any; hint?: s
   return (
     <div className="card !p-3" title={hint}>
       <div className="label">{label}</div>
-      <div className="font-display font-extrabold text-lg text-brand">{value}</div>
+      <div className="text-[17px] text-brand tabular-nums tracking-tightest mt-0.5">{value}</div>
     </div>
   );
 }
@@ -315,7 +321,7 @@ export function OptimizerComparison({ opt }: { opt: any }) {
       </div>
       <div className="text-xs text-muted mb-2">Optimizer: <b>{opt.mode}</b> ({opt.method})</div>
 
-      <div className="text-[11px] rounded-lg bg-bg border border-border text-muted p-2 mb-3">
+      <div className="text-[10.5px] bg-well border border-divider text-muted p-2 mb-3 leading-relaxed">
         Biological scores are computed by classical bioinformatics / ML models. Quantum-inspired
         optimization only searches guide <b>combinations</b> under the QUBO objective — it does not
         predict biology.

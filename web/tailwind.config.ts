@@ -1,9 +1,22 @@
 import type { Config } from "tailwindcss";
 
-// Redesigned theme (Feature 9): minimal, professional, restrained.
-// Cool graphite canvas (not predominantly white), crisp white cards, strong dark
-// slate text, one restrained indigo accent + muted status colors.
+/**
+ * QGuide — terminal design system.
+ *
+ * Colour VALUES live in app/globals.css as CSS variables (space-separated RGB
+ * channels so Tailwind opacity modifiers like `bg-brand/10` keep working).
+ * Light mode is "Stone", dark mode is "Charcoal"; both drive the same class
+ * surface, so components never branch on theme and never hardcode a hex.
+ *
+ * Three rules this direction depends on:
+ *   1. Monospace everywhere — sequences, scores and positions must align.
+ *   2. Borders, never shadows. Square corners. Depth comes from surface value.
+ *   3. Colour is reserved: accent / series / warn / bad. Everything else neutral.
+ */
+const c = (v: string) => `rgb(var(${v}) / <alpha-value>)`;
+
 const config: Config = {
+  darkMode: ["class", '[data-theme="dark"]'],
   content: [
     "./app/**/*.{ts,tsx}",
     "./components/**/*.{ts,tsx}",
@@ -12,25 +25,62 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: "#1b2231",        // primary text — near-black slate
-        muted: "#647087",      // secondary text
-        bg: "#e9edf3",         // app canvas — cool light gray (darker than white)
-        surface: "#ffffff",    // cards / inputs
-        border: "#d7dde8",     // subtle borders
-        brand: { DEFAULT: "#4b54c9", dark: "#373fa6", light: "#c4c9f4" }, // restrained indigo
-        accent: { DEFAULT: "#0f9488", light: "#5eead4" },                 // muted teal
-        sidebar: "#151a26",    // graphite near-black sidebar
-        good: "#0f9d74",       // emerald
-        warn: "#c07c1e",       // amber
-        bad: "#d5495f",        // rose
+        // ---- surfaces (depth is value, not shadow) ----
+        bg: c("--qg-bg"),              // app ground
+        surface: c("--qg-panel"),      // panel / card
+        raised: c("--qg-panel2"),      // panel header, table head
+        chrome: c("--qg-deep"),        // rail + status bar
+        sidebar: c("--qg-deep"),       // legacy alias for chrome
+        well: c("--qg-input"),         // inputs, code wells
+
+        // ---- lines ----
+        border: c("--qg-line"),        // panel borders, header rules
+        divider: c("--qg-line2"),      // row dividers
+
+        // ---- text ----
+        ink: c("--qg-txt"),            // primary
+        cell: c("--qg-td"),            // table cell
+        title: c("--qg-h1"),           // page title
+        muted: c("--qg-dim"),          // secondary
+        faint: c("--qg-faint"),        // labels, tertiary
+        seq: c("--qg-locus"),          // sequence text
+
+        // ---- mark tracks ----
+        track: c("--qg-meter"),
+        track2: c("--qg-be2"),
+
+        // ---- semantic (only four carry meaning) ----
+        // accent  : selection, healthy state, headline value
+        // series  : neutral quantitative bars
+        // warn    : provisional model, medium risk
+        // bad     : high risk, failure
+        brand: {
+          DEFAULT: c("--qg-accent"),
+          dark: c("--qg-accent"),
+          light: c("--qg-accent-soft"),
+        },
+        accent: { DEFAULT: c("--qg-accent"), light: c("--qg-accent-soft") },
+        series: c("--qg-series"),
+        good: c("--qg-accent"),
+        warn: c("--qg-warn"),
+        bad: c("--qg-bad"),
+        alt: c("--qg-alt"),
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        display: ["'Plus Jakarta Sans'", "Inter", "sans-serif"],
+        // Mono-first. IBM Plex Mono is the interface face, not just the code face.
+        mono: ["var(--font-plex-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        sans: ["var(--font-plex-mono)", "ui-monospace", "SFMono-Regular", "Menlo", "monospace"],
+        display: ["var(--font-plex-mono)", "ui-monospace", "monospace"],
+        // Reserved for long-form prose (docs, help panels) where mono hurts reading.
+        prose: ["var(--font-plex-sans)", "system-ui", "sans-serif"],
       },
-      boxShadow: {
-        card: "0 1px 2px rgba(20,26,40,0.04), 0 1px 3px rgba(20,26,40,0.06)",
+      borderRadius: {
+        none: "0px", sm: "0px", DEFAULT: "0px", md: "0px",
+        lg: "0px", xl: "0px", "2xl": "0px", "3xl": "0px",
+        full: "9999px", // kept for avatars / status dots only
       },
+      boxShadow: { card: "none", none: "none" },
+      letterSpacing: { tightest: "-0.03em" },
     },
   },
   plugins: [],

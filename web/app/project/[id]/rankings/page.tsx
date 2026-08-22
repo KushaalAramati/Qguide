@@ -1,10 +1,22 @@
 "use client";
 import { useMemo, useState } from "react";
-import { Card, Pill, scoreKind, riskKind } from "@/components/ui";
+import { Pill, scoreKind, riskKind } from "@/components/ui";
 import { useProject } from "@/lib/projectCtx";
 
 const strandOf = (x: any) => (typeof x?.strand === "string" ? x.strand : x?.strand?.value || "+");
 type SortKey = "rank" | "on" | "ko" | "off" | "final";
+
+/** Inline bar — quantity at a glance without leaving the row. */
+function MiniBar({ v }: { v: number }) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className="inline-block w-10 h-[5px] bg-track2 align-middle overflow-hidden">
+        <span className="block h-full bg-series" style={{ width: `${Math.max(0, Math.min(100, v * 100))}%` }} />
+      </span>
+      <span className="tabular-nums">{v.toFixed(2)}</span>
+    </span>
+  );
+}
 
 export default function Rankings() {
   const { guides, sel, setSel } = useProject();
@@ -22,41 +34,83 @@ export default function Rankings() {
   }, [guides, q, sort]);
 
   const H: [string, SortKey | null][] = [
-    ["Rank", "rank"], ["Guide", null], ["Sequence", null], ["PAM", null], ["Pos", null], ["Strand", null],
-    ["GC", null], ["On-target", "on"], ["KO", "ko"], ["Off-target", "off"], ["Total", "final"],
+    ["#", "rank"], ["id", null], ["protospacer·pam", null], ["str", null], ["pos", null],
+    ["gc", null], ["on_tgt", "on"], ["ko", "ko"], ["off", "off"], ["q_guide", "final"],
   ];
 
   return (
-    <Card className="overflow-x-auto">
-      <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search guides…"
-          className="input max-w-xs" />
-        <span className="text-xs text-muted">{rows.length} of {guides.length} guides · click a header to sort</span>
+    <div className="panel">
+      <div className="panel-head">
+        <span>ranked guides</span>
+        <span className="meta flex items-center gap-3">
+          <span>
+            {rows.length} of {guides.length} rows · order by{" "}
+            <span className="text-muted">{sort === "rank" ? "q_guide" : sort}</span> desc
+          </span>
+        </span>
       </div>
-      <table className="w-full text-sm">
-        <thead><tr className="text-muted text-left text-xs uppercase">
-          {H.map(([h, k]) => (
-            <th key={h} className={`py-1 pr-3 whitespace-nowrap ${k ? "cursor-pointer hover:text-ink" : ""}`}
-              onClick={() => k && setSort(k)}>{h}{sort === k ? " ↓" : ""}</th>
-          ))}
-        </tr></thead>
-        <tbody>
-          {rows.map(({ g, rank }) => (
-            <tr key={g.guide_id} className={`border-t border-border cursor-pointer ${g.guide_id === sel ? "bg-brand/5" : ""}`}
-              onClick={() => setSel(g.guide_id)}>
-              <td className="py-1.5 pr-3">{rank === 1 ? "★ " : ""}{rank}</td>
-              <td className="pr-3"><span className="text-brand font-bold">{g.guide_id}</span></td>
-              <td className="pr-3"><code className="text-xs bg-bg rounded px-1">{g.sequence}</code></td>
-              <td className="pr-3">{g.pam}</td><td className="pr-3">{g.position}</td><td className="pr-3">{strandOf(g)}</td>
-              <td className="pr-3">{(g.gc_content * 100).toFixed(0)}%</td>
-              <td className="pr-3"><Pill value={g.scores.on_target.toFixed(2)} kind={scoreKind(g.scores.on_target)} /></td>
-              <td className="pr-3"><Pill value={g.outcome.knockout_prob.toFixed(2)} kind={scoreKind(g.outcome.knockout_prob)} /></td>
-              <td className="pr-3"><Pill value={g.off_target.risk_score.toFixed(2)} kind={riskKind(g.off_target.risk_score)} /></td>
-              <td className="pr-3 font-extrabold text-brand">{g.final_score.toFixed(3)}</td>
+
+      <div className="px-3 py-2 border-b border-divider flex items-center gap-2">
+        <span className="text-brand text-[11px]">/</span>
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="filter guides"
+          aria-label="Filter guides"
+          className="flex-1 bg-transparent border-0 outline-none text-[11.5px] text-ink placeholder:text-faint"
+        />
+        <span className="text-[10px] text-faint">click a header to sort</span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="dtable">
+          <thead>
+            <tr>
+              {H.map(([h, k]) => (
+                <th
+                  key={h}
+                  onClick={() => k && setSort(k)}
+                  className={`whitespace-nowrap ${k ? "cursor-pointer hover:text-ink" : ""}`}
+                >
+                  {h}{sort === k ? " ▾" : ""}
+                </th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </Card>
+          </thead>
+          <tbody>
+            {rows.map(({ g, rank }) => {
+              const on = g.guide_id === sel;
+              return (
+                <tr
+                  key={g.guide_id}
+                  className={`cursor-pointer ${on ? "is-selected" : "hover:bg-brand/5"}`}
+                  onClick={() => setSel(g.guide_id)}
+                >
+                  <td className="tabular-nums">{String(rank).padStart(2, "0")}</td>
+                  <td className={on ? "" : "text-ink"}>{g.guide_id}</td>
+                  <td className="seqtext whitespace-nowrap">
+                    {g.sequence}<span className="text-warn">{g.pam}</span>
+                  </td>
+                  <td>{strandOf(g)}</td>
+                  <td className="tabular-nums">{g.position}</td>
+                  <td className="tabular-nums">{(g.gc_content * 100).toFixed(0)}</td>
+                  <td><MiniBar v={g.scores.on_target} /></td>
+                  <td className="tabular-nums">{g.outcome.knockout_prob.toFixed(2)}</td>
+                  <td><Pill value={g.off_target.risk_score.toFixed(2)} kind={riskKind(g.off_target.risk_score)} /></td>
+                  <td className={`tabular-nums ${scoreKind(g.final_score) === "good" ? "text-brand" : ""}`}>
+                    {g.final_score.toFixed(3)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="caveat">
+        off_target is a motif scan with no genome alignment, and repair/context terms are untrained
+        priors — treat this ordering as a ranking aid, not a validated prediction.
+      </div>
+    </div>
   );
 }

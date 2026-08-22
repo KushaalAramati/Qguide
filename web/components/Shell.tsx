@@ -4,15 +4,50 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRequireAuth, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { ValidationBanner } from "@/components/ValidationBanner";
 
-function NavLink({ href, icon, label, active }: { href: string; icon: string; label: string; active: boolean }) {
+/**
+ * Application chrome — icon rail, project explorer, command bar, status bar.
+ *
+ * The rail carries destinations, the explorer carries content. Splitting them
+ * means the project tree keeps its full height instead of competing with
+ * navigation for one 240px column.
+ */
+
+type RailItem = { href: string; glyph: string; label: string };
+
+function Rail({ items, path, name }: { items: RailItem[]; path: string; name: string }) {
   return (
-    <Link href={href}
-      className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition
-        ${active ? "bg-white/10 text-white" : "text-slate-300 hover:bg-white/5 hover:text-white"}`}>
-      <span className="w-4 text-center opacity-90">{icon}</span>{label}
-    </Link>
+    <nav className="w-[46px] flex-none bg-chrome border-r border-border flex flex-col items-center py-2 gap-0.5">
+      <div className="w-[26px] h-[26px] mb-2.5 grid place-items-center border border-brand bg-brand/[0.12] text-brand text-[13px] font-semibold">
+        Q
+      </div>
+      {items.map((it) => {
+        const on = it.href === "/dashboard" ? path === it.href : path.startsWith(it.href);
+        return (
+          <Link
+            key={it.href}
+            href={it.href}
+            title={it.label}
+            aria-label={it.label}
+            aria-current={on ? "page" : undefined}
+            className={`w-[30px] h-[30px] grid place-items-center text-[13px] transition-colors ${
+              on
+                ? "text-brand bg-brand/[0.08] shadow-[inset_0_0_0_1px_rgb(var(--qg-accent)/0.22)]"
+                : "text-faint hover:text-ink"
+            }`}
+          >
+            {it.glyph}
+          </Link>
+        );
+      })}
+      <div className="flex-1" />
+      <ThemeToggle compact />
+      <div className="w-[26px] h-[26px] grid place-items-center text-[11px] text-faint" title={name}>
+        {name[0]?.toUpperCase()}
+      </div>
+    </nav>
   );
 }
 
@@ -47,6 +82,19 @@ export function Shell({ children }: { children: ReactNode }) {
   const archived = projects.filter((p) => p.archived && match(p));
   const inFolder = (fid: string | null) => active.filter((p) => (p.folder_id || null) === fid);
 
+  // The command bar echoes the current route as the call that produced the view.
+  const commandLine = useMemo(() => {
+    if (path.startsWith("/project/")) {
+      const [, , id, tab] = path.split("/");
+      return `open --project ${id}${tab ? ` --view ${tab}` : ""}`;
+    }
+    if (path === "/new") return "design --new";
+    if (path === "/account") return "account --show";
+    if (path === "/buy") return "credits --purchase";
+    if (path === "/admin") return "admin --console";
+    return "ls --projects --sort last_run";
+  }, [path]);
+
   async function newFolder() {
     const name = window.prompt("New folder name:");
     if (name) { await api.createFolder(name); refresh(); }
@@ -73,34 +121,56 @@ export function Shell({ children }: { children: ReactNode }) {
     if (window.confirm("Delete this project? This cannot be undone.")) { await api.deleteProject(pid); refresh(); }
   }
 
-  if (!ready) return <div className="min-h-screen grid place-items-center text-muted">Loading…</div>;
+  if (!ready) {
+    return (
+      <div className="min-h-screen grid place-items-center bg-bg text-faint text-[12px] tracking-[0.14em] uppercase">
+        loading&hellip;
+      </div>
+    );
+  }
   if (!account) return null;
   const low = account.credits < 5;
-  const is = (href: string) => path === href;
+
+  const railItems: RailItem[] = [
+    { href: "/dashboard", glyph: "▦", label: "Dashboard" },
+    { href: "/new", glyph: "＋", label: "New design run" },
+    { href: "/account", glyph: "◷", label: "Account" },
+    { href: "/buy", glyph: "◈", label: "Credits" },
+    ...(account.is_admin ? [{ href: "/admin", glyph: "⌗", label: "Admin" }] : []),
+  ];
 
   function ProjectRow({ p }: { p: any }) {
     const on = path.startsWith(`/project/${p.id}`);
     return (
       <div className="relative">
-        <div className={`group flex items-center rounded-md pr-1 ${on ? "bg-brand/25" : "hover:bg-white/5"}`}>
-          <Link href={`/project/${p.id}`}
-            className={`flex-1 min-w-0 px-2.5 py-1.5 text-xs font-medium truncate ${on ? "text-white" : "text-slate-300"}`}>
-            {p.name} <span className="text-slate-500">· {p.id}</span>
+        <div className={`group flex items-center pr-1 ${on ? "bg-brand/[0.08] shadow-[inset_2px_0_0_rgb(var(--qg-accent))]" : "hover:bg-brand/5"}`}>
+          <Link
+            href={`/project/${p.id}`}
+            className={`flex-1 min-w-0 flex items-center gap-1.5 px-2 py-1 text-[11.5px] truncate ${on ? "text-brand" : "text-muted"}`}
+          >
+            <span className={on ? "text-brand" : "text-faint"}>{on ? "›" : "·"}</span>
+            <span className="truncate">{p.name}</span>
+            <span className="ml-auto pl-2 text-[9.5px] text-faint tabular-nums">{p.id}</span>
           </Link>
-          <button onClick={() => setMenu(menu === p.id ? null : p.id)}
-            className="text-slate-400 hover:text-white px-1 text-sm">⋯</button>
+          <button
+            onClick={() => setMenu(menu === p.id ? null : p.id)}
+            aria-label={`Actions for ${p.name}`}
+            className="text-faint hover:text-ink px-1 text-[13px] leading-none"
+          >
+            ⋯
+          </button>
         </div>
         {menu === p.id && (
-          <div className="absolute right-1 z-20 mt-1 w-44 rounded-lg bg-[#20263a] border border-white/10 shadow-lg p-1 text-xs">
-            <div className="px-2 py-1 text-slate-500">Move to…</div>
-            <button onClick={() => moveProj(p.id, null)} className="w-full text-left px-2 py-1 rounded hover:bg-white/10 text-slate-200">Unfiled</button>
+          <div className="absolute right-1 z-20 mt-0.5 w-44 bg-surface border border-border p-1 text-[11px]">
+            <div className="px-2 py-1 label">move to</div>
+            <button onClick={() => moveProj(p.id, null)} className="w-full text-left px-2 py-1 text-muted hover:bg-brand/[0.08] hover:text-brand">unfiled</button>
             {folders.map((f) => (
-              <button key={f.id} onClick={() => moveProj(p.id, f.id)} className="w-full text-left px-2 py-1 rounded hover:bg-white/10 text-slate-200 truncate">{f.name}</button>
+              <button key={f.id} onClick={() => moveProj(p.id, f.id)} className="w-full text-left px-2 py-1 text-muted hover:bg-brand/[0.08] hover:text-brand truncate">{f.name}</button>
             ))}
-            <div className="border-t border-white/10 my-1" />
-            <button onClick={() => renameProj(p.id, p.name)} className="w-full text-left px-2 py-1 rounded hover:bg-white/10 text-slate-200">Rename</button>
-            <button onClick={() => archiveProj(p.id, !p.archived)} className="w-full text-left px-2 py-1 rounded hover:bg-white/10 text-slate-200">{p.archived ? "Unarchive" : "Archive"}</button>
-            <button onClick={() => delProj(p.id)} className="w-full text-left px-2 py-1 rounded hover:bg-white/10 text-rose-300">Delete</button>
+            <div className="border-t border-divider my-1" />
+            <button onClick={() => renameProj(p.id, p.name)} className="w-full text-left px-2 py-1 text-muted hover:bg-brand/[0.08] hover:text-brand">rename</button>
+            <button onClick={() => archiveProj(p.id, !p.archived)} className="w-full text-left px-2 py-1 text-muted hover:bg-brand/[0.08] hover:text-brand">{p.archived ? "unarchive" : "archive"}</button>
+            <button onClick={() => delProj(p.id)} className="w-full text-left px-2 py-1 text-bad hover:bg-bad/10">delete</button>
           </div>
         )}
       </div>
@@ -108,85 +178,108 @@ export function Shell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen flex bg-bg">
-      <aside className="w-60 shrink-0 flex flex-col gap-1 p-3 bg-sidebar sticky top-0 h-screen">
-        <div className="flex items-center gap-2 px-2 py-2">
-          <span className="grid place-items-center w-8 h-8 rounded-lg bg-brand text-white font-display font-extrabold">Q</span>
-          <div>
-            <div className="font-display font-extrabold text-[15px] text-white leading-none">QGuide</div>
-            <div className="text-[9px] tracking-[0.14em] font-semibold text-slate-400 mt-1">GUIDE-RNA DESIGN</div>
+    <div className="min-h-screen h-screen flex bg-bg text-ink overflow-hidden">
+      <Rail items={railItems} path={path} name={account.name} />
+
+      {/* ---- project explorer ---- */}
+      <aside className="w-[224px] flex-none bg-surface border-r border-border flex flex-col">
+        <div className="px-3 py-2 border-b border-border flex items-center">
+          <span className="label">project explorer</span>
+          <button onClick={newFolder} title="New folder" aria-label="New folder"
+            className="ml-auto text-faint hover:text-brand text-[13px] leading-none">＋</button>
+        </div>
+
+        <div className="px-2 pt-2">
+          <div className="flex items-center gap-1.5 border border-border bg-well px-2 py-1">
+            <span className="text-brand text-[11px]">/</span>
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="filter"
+              aria-label="Filter projects"
+              className="w-full bg-transparent border-0 outline-none text-[11px] text-ink placeholder:text-faint"
+            />
           </div>
         </div>
 
-        <div className="mt-1 flex flex-col gap-0.5">
-          <NavLink href="/dashboard" icon="◧" label="Dashboard" active={is("/dashboard")} />
-          <NavLink href="/new" icon="＋" label="New project" active={is("/new")} />
-          <NavLink href="/account" icon="◔" label="Account" active={is("/account")} />
-          <NavLink href="/buy" icon="◈" label="Credits" active={is("/buy")} />
-          {account.is_admin && <NavLink href="/admin" icon="⚙" label="Admin" active={is("/admin")} />}
-        </div>
-
-        <div className="mt-3 flex items-center justify-between px-1">
-          <div className="text-[10px] font-bold tracking-wider text-slate-500">PROJECTS</div>
-          <button onClick={newFolder} title="New folder" className="text-slate-400 hover:text-white text-sm leading-none">＋⌸</button>
-        </div>
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search…"
-          className="w-full rounded-md bg-white/5 border border-white/10 text-slate-200 placeholder:text-slate-500 text-xs px-2.5 py-1.5 outline-none focus:border-brand/60 mt-1" />
-
-        <div className="flex flex-col gap-0.5 mt-2 overflow-auto flex-1 pr-0.5" onClick={() => menu && setMenu(null)}>
-          {/* unfiled */}
+        <div className="flex-1 overflow-auto px-1.5 pt-1" onClick={() => menu && setMenu(null)}>
           {inFolder(null).map((p) => <ProjectRow key={p.id} p={p} />)}
 
-          {/* folders */}
           {folders.map((f) => {
             const kids = inFolder(f.id);
             const open = openF[f.id] ?? true;
             return (
               <div key={f.id} style={{ marginLeft: depth(f.id) * 8 }}>
-                <div className="group flex items-center gap-1 mt-1">
-                  <button onClick={() => setOpenF((o) => ({ ...o, [f.id]: !open }))}
-                    className="flex-1 min-w-0 flex items-center gap-1 text-[11px] font-bold text-slate-400 hover:text-white px-1 py-1">
-                    <span>{open ? "▾" : "▸"}</span><span className="truncate">{f.name}</span>
-                    <span className="text-slate-600">({kids.length})</span>
+                <div className="group flex items-center gap-1 mt-1.5">
+                  <button
+                    onClick={() => setOpenF((o) => ({ ...o, [f.id]: !open }))}
+                    className="flex-1 min-w-0 flex items-center gap-1.5 px-1.5 py-1 text-[9.5px] tracking-[0.14em] uppercase text-faint hover:text-ink"
+                  >
+                    <span>{open ? "▾" : "▸"}</span>
+                    <span className="truncate">{f.name}</span>
+                    <span className="ml-auto">{kids.length}</span>
                   </button>
-                  <button onClick={() => subFolder(f.id)} title="Subfolder" className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white text-xs">＋</button>
-                  <button onClick={() => renameFolder(f.id, f.name)} title="Rename" className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-white text-xs">✎</button>
-                  <button onClick={() => delFolder(f.id)} title="Delete" className="opacity-0 group-hover:opacity-100 text-slate-500 hover:text-rose-300 text-xs">✕</button>
+                  <button onClick={() => subFolder(f.id)} title="New subfolder" className="opacity-0 group-hover:opacity-100 text-faint hover:text-ink text-[11px]">＋</button>
+                  <button onClick={() => renameFolder(f.id, f.name)} title="Rename folder" className="opacity-0 group-hover:opacity-100 text-faint hover:text-ink text-[11px]">✎</button>
+                  <button onClick={() => delFolder(f.id)} title="Delete folder" className="opacity-0 group-hover:opacity-100 text-faint hover:text-bad text-[11px]">✕</button>
                 </div>
-                {open && kids.map((p) => <div key={p.id} className="ml-2"><ProjectRow p={p} /></div>)}
+                {open && kids.map((p) => <ProjectRow key={p.id} p={p} />)}
               </div>
             );
           })}
 
-          {active.length === 0 && <div className="text-[11px] text-slate-500 px-3 py-2">No projects.</div>}
+          {active.length === 0 && (
+            <div className="px-2 py-2 text-[11px] text-faint">no projects.</div>
+          )}
 
-          {/* archived */}
           {archived.length > 0 && (
-            <div className="mt-2 border-t border-white/10 pt-2">
-              <button onClick={() => setShowArch((v) => !v)} className="text-[10px] font-bold tracking-wider text-slate-500 hover:text-slate-300 px-1">
-                {showArch ? "▾" : "▸"} ARCHIVED ({archived.length})
+            <div className="mt-2 border-t border-divider pt-2">
+              <button
+                onClick={() => setShowArch((v) => !v)}
+                className="px-1.5 py-1 text-[9.5px] tracking-[0.14em] uppercase text-faint hover:text-ink"
+              >
+                {showArch ? "▾" : "▸"} archived {archived.length}
               </button>
-              {showArch && archived.map((p) => <div key={p.id} className="opacity-70"><ProjectRow p={p} /></div>)}
+              {showArch && archived.map((p) => (
+                <div key={p.id} className="opacity-60"><ProjectRow p={p} /></div>
+              ))}
             </div>
           )}
         </div>
 
-        <div className="mt-2 pt-2 border-t border-white/10">
-          <div className={`rounded-lg px-3 py-2 text-sm font-semibold flex items-center justify-between ${low ? "bg-bad/20 text-rose-200" : "bg-white/5 text-slate-200"}`}>
-            <span>◈ {account.credits}</span><span className="text-[10px] font-medium opacity-70">credits</span>
-          </div>
-          <div className="flex items-center gap-2 mt-2 px-1">
-            <div className="w-7 h-7 rounded-full grid place-items-center text-xs font-bold text-white bg-brand">{account.name[0]?.toUpperCase()}</div>
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold text-slate-100 truncate">{account.name}</div>
-              <div className="text-[10px] text-slate-500 truncate">{account.plan}</div>
-            </div>
-            <button onClick={signOut} title="Log out" className="text-slate-400 hover:text-white text-sm px-1">⏻</button>
-          </div>
+        <div className="border-t border-border px-3 py-2 flex items-center gap-2 text-[10px] text-faint">
+          <span>credits</span>
+          <b className={low ? "text-bad" : "text-brand"}>{account.credits}</b>
+          <span className="ml-auto truncate" title={account.name}>{account.name}</span>
+          <button onClick={signOut} title="Log out" aria-label="Log out" className="hover:text-ink">⏻</button>
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 p-6 max-w-[1500px]"><ValidationBanner />{children}</main>
+      {/* ---- main column ---- */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        <div className="h-[34px] flex-none bg-surface border-b border-border flex items-center gap-2 px-3 text-[11.5px]">
+          <span className="text-brand">qguide ›</span>
+          <span className="text-ink truncate">{commandLine}</span>
+          <span className="inline-block w-[7px] h-[14px] bg-brand opacity-70" aria-hidden />
+          <span className="flex-1" />
+          {low && <span className="text-bad text-[10.5px]">! {account.credits} credits remaining</span>}
+          <span className="text-faint text-[10.5px]">{account.plan}</span>
+        </div>
+
+        <ValidationBanner />
+
+        <main className="flex-1 min-h-0 overflow-auto p-3">{children}</main>
+
+        <div className="h-[22px] flex-none bg-chrome border-t border-border flex items-center gap-4 px-3 text-[10px] text-faint">
+          <span className="text-brand">● api ok</span>
+          <span>projects <b className="text-muted font-normal">{projects.length}</b></span>
+          <span>db <b className="text-muted font-normal">postgres</b></span>
+          <span className="flex-1" />
+          <span>GRCh38</span>
+          <span>credits <b className={low ? "text-bad font-normal" : "text-muted font-normal"}>{account.credits}</b></span>
+          <span className="hidden lg:inline">/ filter · ? help</span>
+        </div>
+      </div>
     </div>
   );
 }
