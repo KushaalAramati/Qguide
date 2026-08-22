@@ -99,11 +99,11 @@ export default function BasicResults() {
           <CardTitle>Score breakdown</CardTitle>
           <BarRow label="On-target" value={g.scores.on_target} />
           <BarRow label="Knockout" value={g.outcome.knockout_prob} />
-          <BarRow label="Off-target" value={g.off_target.risk_score} color={g.off_target.risk_score < 0.2 ? "#4b54c9" : "#c07c1e"} />
-          <BarRow label="GC content" value={g.scores.gc_content} color="#0f9488" />
-          <BarRow label="Complexity" value={g.scores.complexity} color="#0f9488" />
+          <BarRow label="Off-target" value={g.off_target.risk_score} tone={g.off_target.risk_score < 0.2 ? "series" : "warn"} />
+          <BarRow label="GC content" value={g.scores.gc_content} tone="series" />
+          <BarRow label="Complexity" value={g.scores.complexity} tone="series" />
           <BarRow label="Context" value={Math.min(1, g.context.multiplier)} />
-          <BarRow label="Structure pen." value={g.scores.secondary_structure_penalty} color="#c07c1e" />
+          <BarRow label="Structure pen." value={g.scores.secondary_structure_penalty} tone="warn" />
         </Card>
         <Card>
           <CardTitle>Why this guide?</CardTitle>
