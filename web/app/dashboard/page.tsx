@@ -1,100 +1,126 @@
 "use client";
-// Main dashboard (Feature 8): overview after login.
-import { useEffect, useState } from "react";
+// User dashboard: the landing view after sign-in. Answers "what have I got,
+// what happened recently, what should I do next" — and nothing administrative.
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
-import { Card, CardTitle, Metric } from "@/components/ui";
-import { api, Account } from "@/lib/api";
+import { Panel, Metric } from "@/components/ui";
+import { PageHeader, EmptyState, LoadingRows, ErrorState } from "@/components/PageHeader";
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { BRANDING } from "@/lib/branding";
 
 export default function DashboardPage() {
   return <Shell><Dash /></Shell>;
 }
 
 function Dash() {
-  const [acct, setAcct] = useState<Account | null>(null);
-  const [projects, setProjects] = useState<any[]>([]);
+  const { account, refresh } = useAuth();
+  const [projects, setProjects] = useState<any[] | null>(null);
+  const [err, setErr] = useState("");
 
-  useEffect(() => {
-    api.me().then(setAcct).catch(() => {});
-    api.projects().then((p) => setProjects(p || [])).catch(() => {});
+  const load = useCallback(() => {
+    setErr("");
+    api.projects().then((p) => setProjects(p || [])).catch((e) => { setErr(e.message || "Could not load projects."); setProjects([]); });
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  useEffect(() => { load(); }, [load]);
 
-  const totalGuides = projects.reduce((s, p) => s + (p.n_guides || 0), 0);
-  const recent = [...projects].slice(-6).reverse();
-  const maxG = Math.max(1, ...projects.map((p) => p.n_guides || 0));
+  const all = projects || [];
+  const active = all.filter((p) => !p.archived);
+  const totalGuides = all.reduce((s, p) => s + (p.n_guides || 0), 0);
+  const recent = [...active].sort((a, b) => (b.created || "").localeCompare(a.created || "")).slice(0, 8);
+  const maxG = Math.max(1, ...recent.map((p) => p.n_guides || 0));
+  const low = (account?.credits ?? 0) < 5;
+  const firstName = account?.name?.split(" ")[0];
 
   return (
-    <div className="flex flex-col gap-5">
-      <div className="flex justify-between items-end">
-        <div>
-          <div className="font-display font-extrabold text-3xl">Dashboard</div>
-          <div className="text-muted">{acct ? `Welcome back, ${acct.name}.` : "Loading…"}</div>
-        </div>
-        <Link href="/new" className="btn-primary text-sm">＋ New project</Link>
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        eyebrow="overview"
+        title={firstName ? `Welcome back, ${firstName}` : "Dashboard"}
+        description={`Your CRISPR design projects and analyses in ${BRANDING.APP_NAME}.`}
+        primary={<Link href="/new" className="btn-primary text-[12px]">＋ Create project</Link>}
+        actions={low ? <Link href="/buy" className="btn-ghost text-[12px]">Add credits</Link> : undefined}
+      />
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <Metric label="Projects" value={projects ? active.length : "—"} sub={all.length - active.length ? `${all.length - active.length} archived` : "active designs"} color="brand" />
+        <Metric label="Analyses run" value={account?.runs ?? "—"} sub="lifetime design runs" />
+        <Metric label="Guides evaluated" value={projects ? totalGuides : "—"} sub="across all projects" />
+        <Metric label="Credits" value={account?.credits ?? "—"} sub={account?.plan || ""} color={low ? "bad" : "good"} />
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <Metric label="Projects" value={projects.length} sub="total designs" color="brand" />
-        <Metric label="Analyses run" value={acct?.runs ?? "—"} sub="lifetime" />
-        <Metric label="Guides evaluated" value={totalGuides} sub="across projects" />
-        <Metric label="Credits" value={acct?.credits ?? "—"} sub={acct?.plan || ""} color={acct && acct.credits < 5 ? "bad" : "good"} />
-      </div>
+      {err && <ErrorState message={err} retry={load} />}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_1fr] gap-4 items-start">
-        <Card>
-          <div className="flex items-center justify-between mb-2">
-            <CardTitle>Recent projects</CardTitle>
-            <Link href="/new" className="text-brand text-sm font-semibold">New →</Link>
-          </div>
-          {recent.length === 0 ? (
-            <div className="text-sm text-muted py-6 text-center">
-              No projects yet. <Link href="/new" className="text-brand font-semibold">Create your first design →</Link>
-            </div>
+      <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 items-start">
+        <Panel title="recent projects" meta={projects ? `${active.length} active` : ""} bodyClass="">
+          {projects === null ? <LoadingRows n={5} /> : recent.length === 0 ? (
+            <EmptyState
+              title="No projects yet."
+              body="A project is one design run: paste a target sequence, choose a nuclease and outcome, and get ranked, explained guide RNAs."
+              action={<Link href="/new" className="btn-primary text-[12px]">Create your first project</Link>}
+            />
           ) : (
-            <table className="w-full text-sm">
-              <thead><tr className="text-muted text-left text-xs uppercase">
-                {["Project", "Guides", "Best", "Created"].map((h) => <th key={h} className="py-1 pr-3">{h}</th>)}
-              </tr></thead>
+            <table className="dtable">
+              <thead><tr><th>project</th><th>guides</th><th>best guide</th><th>created</th></tr></thead>
               <tbody>
                 {recent.map((p) => (
-                  <tr key={p.id} className="border-t border-border">
-                    <td className="py-2 pr-3"><Link href={`/project/${p.id}`} className="text-brand font-semibold">{p.name}</Link> <span className="text-muted text-xs">· {p.id}</span></td>
-                    <td className="pr-3">{p.n_guides ?? "—"}</td>
-                    <td className="pr-3 font-mono text-xs">{p.best_guide || "—"}</td>
-                    <td className="pr-3 text-muted text-xs">{p.created}</td>
+                  <tr key={p.id}>
+                    <td>
+                      <Link href={`/project/${p.id}`} className="text-brand hover:underline">{p.name}</Link>
+                      <span className="ml-2 text-faint text-[10.5px] tabular-nums">{p.id}</span>
+                    </td>
+                    <td className="tabular-nums">{p.n_guides ?? "—"}</td>
+                    <td className="seqtext text-[11px]">{p.best_guide || "—"}</td>
+                    <td className="text-muted whitespace-nowrap">{p.created}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
-        </Card>
+        </Panel>
 
-        <Card>
-          <CardTitle>Project activity</CardTitle>
-          <div className="text-xs text-muted mb-3">Candidate guides per recent project</div>
-          {recent.length === 0 ? <div className="text-sm text-muted">—</div> : (
-            <div className="flex flex-col gap-2">
-              {recent.map((p) => (
-                <div key={p.id} className="flex items-center gap-2">
-                  <span className="w-24 text-xs text-muted truncate">{p.name}</span>
-                  <div className="flex-1 h-2.5 rounded-full bg-bg overflow-hidden">
-                    <div className="h-full rounded-full bg-brand" style={{ width: `${((p.n_guides || 0) / maxG) * 100}%` }} />
+        <div className="flex flex-col gap-4">
+          <Panel title="next steps">
+            <div className="flex flex-col divide-y divide-divider">
+              <Action href="/new" title="New analysis" body="Design guides for a target sequence." />
+              <Action href="/account" title="Account & settings" body="Profile, password, usage history." />
+              <Action href="/buy" title="Credits" body={`${account?.credits ?? 0} available · 5 per design run.`} />
+              <Action href="/disclaimer" title="How to read the scores" body="What predictions mean and what to validate." />
+            </div>
+          </Panel>
+
+          {recent.length > 0 && (
+            <Panel title="candidate guides per project">
+              <div className="flex flex-col gap-1.5">
+                {recent.slice(0, 6).map((p) => (
+                  <div key={p.id} className="flex items-center gap-2 text-[11px]">
+                    <span className="w-24 text-muted truncate" title={p.name}>{p.name}</span>
+                    <span className="flex-1 h-[6px] bg-track overflow-hidden">
+                      <span className="block h-full bg-series" style={{ width: `${((p.n_guides || 0) / maxG) * 100}%` }} />
+                    </span>
+                    <span className="w-7 text-right tabular-nums text-cell">{p.n_guides ?? 0}</span>
                   </div>
-                  <span className="w-8 text-right text-xs font-bold">{p.n_guides ?? 0}</span>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            </Panel>
           )}
-          <div className="mt-4 pt-3 border-t border-border">
-            <div className="label mb-1">Quick actions</div>
-            <div className="flex flex-col gap-1.5 text-sm">
-              <Link href="/new" className="text-brand font-semibold">＋ Start a new guide design</Link>
-              <Link href="/buy" className="text-brand font-semibold">◈ Purchase credits</Link>
-              <Link href="/account" className="text-brand font-semibold">◔ Account & billing</Link>
-            </div>
-          </div>
-        </Card>
+        </div>
       </div>
     </div>
+  );
+}
+
+function Action({ href, title, body }: { href: string; title: string; body: string }) {
+  return (
+    <Link href={href} className="group flex items-start gap-3 py-2 first:pt-0 last:pb-0">
+      <span className="text-brand mt-0.5">›</span>
+      <span className="min-w-0">
+        <span className="block text-[12px] text-ink group-hover:text-brand">{title}</span>
+        <span className="block text-[11px] text-faint">{body}</span>
+      </span>
+    </Link>
   );
 }

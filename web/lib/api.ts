@@ -113,6 +113,9 @@ export const api = {
   adminSetCredits: (email: string, credits: number) =>
     req("/admin/credits", { method: "POST", body: JSON.stringify({ email, credits }) }),
   adminRoles: () => req("/admin/roles"),
+  adminStats: () => req("/admin/stats"),
+  adminActivity: (limit = 50) => req(`/admin/activity?limit=${limit}`),
+  adminHealth: () => req("/admin/health"),
   adminSetRole: (email: string, role: string) =>
     req("/admin/role", { method: "POST", body: JSON.stringify({ email, role }) }),
   adminSetStatus: (email: string, status: "active" | "suspended") =>

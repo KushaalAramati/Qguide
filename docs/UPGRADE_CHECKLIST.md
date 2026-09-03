@@ -28,13 +28,16 @@ Decisions so far
 - [x] Legal module (`qguide/app/legal.py`), `GET /legal/{slug}`, pages `/terms` `/privacy` `/disclaimer`
 - [x] Signup UI: terms consent, institution, policy hint, precise error + loading states
 - [x] Tests: 166 passing (`qguide/tests/test_auth_roles.py` added)
-- [~] `next build` verification
+- [x] `next build` verification (run in the cloud sandbox; Google Fonts stubbed there only)
 
-## Phase 2 — User dashboard vs admin dashboard  `[ ]`
-- [ ] `GET /admin/stats` (users total / active / new, projects, plan breakdown, recent signups)
-- [ ] Admin dashboard page: metrics, user management (role, status, credits), activity, system health
-- [ ] User dashboard: projects, recent, analyses, collaborations, account, help
-- [ ] Admin never sees project contents (least privilege)
+## Phase 2 — User dashboard vs admin dashboard  `[x]`
+- [x] `GET /admin/stats` (users total / active / new, projects, plan + role breakdown, 12-week trend, recent signups)
+- [x] `GET /admin/activity` (ledger events, gene names stripped) · `GET /admin/health` (db, migrations, email, auth, CORS, quantum sampler)
+- [x] Admin dashboard: Overview · Users (search, role select, suspend/reactivate, credits, CSV) · Activity · System
+- [x] User dashboard: header with primary CTA, metrics, recent projects, next steps, guide activity; loading/empty/error states
+- [x] Shared `PageHeader` / `Tabs` / `EmptyState` / `LoadingRows` / `ErrorState` primitives
+- [x] Admin never sees project contents (server-side; test asserts no sequences leak)
+- [ ] "Shared with me" section on the user dashboard — lands with Phase 5
 
 ## Phase 3 — Collapsible sidebar + information hierarchy  `[ ]`
 - [ ] Labelled collapsible sidebar, persisted preference, tooltips when collapsed
