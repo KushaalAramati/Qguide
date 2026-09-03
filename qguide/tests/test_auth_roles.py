@@ -214,3 +214,26 @@ def test_admin_stats_shape_and_privacy():
     health = client.get("/admin/health", headers=ah).json()
     assert health["database"]["ok"] and health["database"]["migration_version"] >= 2
     assert "JWT_SECRET" not in str(health) or "configured" in str(health)
+
+
+# --------------------------------------------------------------------------- #
+# Onboarding                                                                   #
+# --------------------------------------------------------------------------- #
+def test_onboarding_shown_once_then_persisted():
+    _signup("tour@test.com")
+    h = _auth("tour@test.com")
+    me = client.get("/me", headers=h).json()
+    assert me["onboarding"]["completed"] is False and me["onboarding"]["step"] == 0
+    # progress is saved step by step
+    r = client.patch("/account/onboarding", headers=h, json={"step": 4})
+    assert r.status_code == 200 and r.json()["step"] == 4
+    # finishing marks it complete with a timestamp
+    r = client.patch("/account/onboarding", headers=h, json={"completed": True})
+    assert r.json()["completed"] is True and r.json()["completed_at"]
+    # a fresh sign-in does not show it again
+    h2 = _auth("tour@test.com")
+    assert client.get("/me", headers=h2).json()["onboarding"]["completed"] is True
+    # replay from settings resets it
+    r = client.patch("/account/onboarding", headers=h2, json={"completed": False})
+    assert r.json() == {"completed": False, "step": 0, "completed_at": None}
+    assert client.get("/account/onboarding").status_code == 401

@@ -5,12 +5,14 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Button } from "@/components/ui";
 import { PageHeader } from "@/components/PageHeader";
+import { ReplayTourButton } from "@/components/Onboarding";
+import { TOUR_STEPS } from "@/lib/tour";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
 export default function AccountPage() { return <Shell><AccountView /></Shell>; }
 
-const SECTIONS = ["Profile", "Security", "Credits", "Billing", "Usage"] as const;
+const SECTIONS = ["Profile", "Security", "Credits", "Billing", "Usage", "Onboarding"] as const;
 type Sec = typeof SECTIONS[number];
 
 function AccountView() {
@@ -54,6 +56,23 @@ function AccountView() {
       )}
       {sec === "Billing" && <Ledger rows={account.transactions.filter((t) => t.type === "purchase" || t.type === "bonus" || t.type === "admin")} title="Billing history" empty="No purchases yet." showPaid />}
       {sec === "Usage" && <Ledger rows={account.transactions.filter((t) => t.type === "usage")} title="Usage history" empty="No usage yet." />}
+      {sec === "Onboarding" && (
+        <Card>
+          <CardTitle>Tutorial</CardTitle>
+          <div className="text-[12px] text-muted">
+            {account.onboarding?.completed
+              ? `You finished the walkthrough${account.onboarding.completed_at ? ` on ${account.onboarding.completed_at}` : ""}. Replay it any time — it takes about two minutes.`
+              : "The walkthrough is still open — it will show on your next visit to the dashboard."}
+          </div>
+          <div className="mt-3"><ReplayTourButton /></div>
+          <div className="mt-4 pt-3 border-t border-divider">
+            <div className="label mb-1.5">what it covers</div>
+            <ol className="text-[11.5px] text-muted grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-0.5 list-decimal list-inside">
+              {TOUR_STEPS.map((s) => <li key={s.title}>{s.title}</li>)}
+            </ol>
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

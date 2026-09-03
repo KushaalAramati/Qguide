@@ -48,6 +48,7 @@ export interface Account {
   institution?: string | null;
   research_area?: string | null;
   terms_accepted_at?: string | null;
+  onboarding?: { completed: boolean; step: number; completed_at?: string | null };
   transactions: {
     ts: string;
     type: string;
@@ -98,6 +99,9 @@ export const api = {
     req("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
   resetPassword: (token: string, new_password: string) =>
     req("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, new_password }) }),
+  onboarding: () => req("/account/onboarding"),
+  updateOnboarding: (patch: { step?: number; completed?: boolean }) =>
+    req("/account/onboarding", { method: "PATCH", body: JSON.stringify(patch) }),
   updateProfile: (patch: { name?: string; institution?: string; research_area?: string }) =>
     req("/account/profile", { method: "PATCH", body: JSON.stringify(patch) }),
   // Folders / project organisation

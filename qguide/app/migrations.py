@@ -130,4 +130,15 @@ MIGRATIONS: List[Migration] = [
             "UPDATE users SET status = 'active' WHERE status IS NULL",
         ),
     ),
+    Migration(
+        version=3,
+        description="Onboarding state on the user profile",
+        statements=(
+            "ALTER TABLE users ADD COLUMN onboarding_completed INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN onboarding_step INTEGER DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN onboarding_completed_at VARCHAR(32)",
+            "UPDATE users SET onboarding_completed = 0 WHERE onboarding_completed IS NULL",
+            "UPDATE users SET onboarding_step = 0 WHERE onboarding_step IS NULL",
+        ),
+    ),
 ]

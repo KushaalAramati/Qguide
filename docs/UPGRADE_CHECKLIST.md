@@ -52,10 +52,12 @@ Decisions so far
 - [x] Footer legal links inside the app shell
 - [ ] Collaborations / Research Tools nav entries — added when their pages land (Phases 5, 6)
 
-## Phase 4 — First-time onboarding  `[ ]`
-- [ ] `onboarding_completed` / `onboarding_step` on user; API to read/update
-- [ ] Step-by-step tour (Next / Back / Skip / Finish), shown once
-- [ ] Replay from Settings and Help
+## Phase 4 — First-time onboarding  `[x]`
+- [x] Migration 0003: `onboarding_completed`, `onboarding_step`, `onboarding_completed_at`; `GET/PATCH /account/onboarding`; flag on `/me`
+- [x] 11-step tour (`lib/tour.ts`, `components/Onboarding.tsx`): Next / Back / Skip tutorial / Finish, ← → Esc keys, deep links
+- [x] Shown once per **account** (server flag), progress persisted step by step
+- [x] Replay tutorial from Settings › Onboarding (lists the steps)
+- [x] Test: first login shows it, finish persists, second login does not, replay resets
 
 ## Phase 5 — Collaboration and permissions  `[ ]`
 - [ ] Global project id + owner; `project_memberships` (OWNER / EDITOR / VIEWER)

@@ -6,6 +6,7 @@ import { useRequireAuth, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { ValidationBanner } from "@/components/ValidationBanner";
 import { Sidebar, useSidebarState } from "@/components/Sidebar";
+import { OnboardingTour } from "@/components/Onboarding";
 import { LogoMark, LegalFooter } from "@/components/Brand";
 import { APP_SLUG, BRANDING } from "@/lib/branding";
 
@@ -63,6 +64,7 @@ export function Shell({ children }: { children: ReactNode }) {
 
   return (
     <div className="h-screen flex bg-bg text-ink overflow-hidden">
+      <OnboardingTour />
       {/* ---- sidebar (laptop / desktop) ---- */}
       <div className="hidden md:flex h-full">
         <Sidebar collapsed={collapsed} onToggle={toggle} />

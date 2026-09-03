@@ -456,6 +456,32 @@ def update_profile(body: ProfileBody, email: str = Depends(current_email)) -> Di
 
 
 # --------------------------------------------------------------------------- #
+# Onboarding                                                                  #
+# --------------------------------------------------------------------------- #
+class OnboardingBody(BaseModel):
+    step: Optional[int] = Field(default=None, ge=0, le=50)
+    completed: Optional[bool] = None
+
+
+@router.get("/account/onboarding")
+def get_onboarding(email: str = Depends(current_email)) -> Dict[str, object]:
+    ob = store.get_onboarding(email)
+    if ob is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return ob
+
+
+@router.patch("/account/onboarding")
+def update_onboarding(body: OnboardingBody,
+                      email: str = Depends(current_email)) -> Dict[str, object]:
+    """Save tour progress, mark it finished/skipped, or reset it to replay."""
+    ob = store.update_onboarding(email, body.step, body.completed)
+    if ob is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return ob
+
+
+# --------------------------------------------------------------------------- #
 # Billing / credits                                                           #
 # --------------------------------------------------------------------------- #
 @router.get("/billing/packages")

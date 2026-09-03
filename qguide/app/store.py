@@ -51,6 +51,10 @@ class User(Base):
     research_area = Column(String(255))
     terms_accepted_at = Column(String(32))
     terms_version = Column(String(16))
+    # --- onboarding (migration 0003): shown once, replayable from Settings ---
+    onboarding_completed = Column(Integer, nullable=False, default=0)
+    onboarding_step = Column(Integer, nullable=False, default=0)
+    onboarding_completed_at = Column(String(32))
 
 
 class Transaction(Base):
@@ -162,6 +166,9 @@ def _user_dict(u: User) -> Dict:
             "institution": getattr(u, "institution", None),
             "research_area": getattr(u, "research_area", None),
             "terms_accepted_at": getattr(u, "terms_accepted_at", None),
+            "onboarding": {"completed": bool(getattr(u, "onboarding_completed", 0) or 0),
+                           "step": int(getattr(u, "onboarding_step", 0) or 0),
+                           "completed_at": getattr(u, "onboarding_completed_at", None)},
             "permissions": roles_mod.permissions_for(role)}
 
 
@@ -736,3 +743,30 @@ def db_health() -> Dict:
     except Exception as exc:                              # noqa: BLE001
         out["error"] = str(exc)[:200]
     return out
+
+
+# --------------------------------------------------------------------------- #
+# Onboarding                                                                    #
+# --------------------------------------------------------------------------- #
+def get_onboarding(email: str) -> Optional[Dict]:
+    with session_scope() as s:
+        u = s.get(User, (email or "").strip().lower())
+        return _user_dict(u)["onboarding"] if u else None
+
+
+def update_onboarding(email: str, step: Optional[int] = None,
+                      completed: Optional[bool] = None) -> Optional[Dict]:
+    """Persist tour progress. `completed=True` marks it done (Finish or Skip);
+    `completed=False` resets it so the tour replays on the next visit."""
+    with session_scope() as s:
+        u = s.get(User, (email or "").strip().lower())
+        if not u:
+            return None
+        if step is not None:
+            u.onboarding_step = max(0, int(step))
+        if completed is not None:
+            u.onboarding_completed = 1 if completed else 0
+            u.onboarding_completed_at = _now() if completed else None
+            if not completed:
+                u.onboarding_step = 0
+        return _user_dict(u)["onboarding"]
