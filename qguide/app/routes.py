@@ -11,17 +11,28 @@ import os
 import time
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException
-from pydantic import BaseModel, EmailStr
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from pydantic import BaseModel, EmailStr, Field
 
-from qguide.app import auth, billing, store
+from qguide.app import auth, billing, emailer, ratelimit, store
+from qguide.app import roles as roles_mod
+from qguide.app.branding import BRANDING
+from qguide.app.legal import LEGAL_DOCUMENTS, TERMS_VERSION
 
-# Admin allowlist: set ADMIN_EMAILS (comma-separated) on the server.
-ADMIN_EMAILS = {e.strip().lower() for e in os.environ.get("ADMIN_EMAILS", "").split(",") if e.strip()}
+
+def bootstrap_admin_emails() -> set:
+    """Environment-configured initial admins (ADMIN_EMAILS, comma-separated).
+    These are a bootstrap mechanism only -- the authoritative role lives in the
+    database and is read on every request."""
+    return roles_mod.bootstrap_admin_emails()
 
 
 def is_admin(email: str) -> bool:
-    return (email or "").strip().lower() in ADMIN_EMAILS
+    """Authoritative admin check: database role first, env allowlist as bootstrap."""
+    email = (email or "").strip().lower()
+    if store.get_role(email) == roles_mod.ADMIN:
+        return True
+    return email in bootstrap_admin_emails()
 from qguide.app.schemas import DesignRequest, DesignResponse, Guide
 from qguide.core import (
     formula_explainer,
@@ -40,11 +51,21 @@ router = APIRouter()
 # Auth dependency                                                              #
 # --------------------------------------------------------------------------- #
 def current_email(authorization: Optional[str] = Header(default=None)) -> str:
+    """Resolve the caller from the bearer token. The token carries identity only --
+    role and account status are re-read from the database on every request, so a
+    demoted or suspended user loses access immediately rather than at token expiry."""
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Missing bearer token.")
     email = auth.decode_token(authorization.split(" ", 1)[1])
-    if not email or store.get_user(email) is None:
+    if not email:
         raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    user = store.get_user(email)
+    if user is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired token.")
+    if (user.get("status") or "active") != "active":
+        raise HTTPException(status_code=403,
+                            detail="This account has been suspended. Contact "
+                                   f"{BRANDING.support_email}.")
     return email
 
 
@@ -54,17 +75,51 @@ def current_admin(email: str = Depends(current_email)) -> str:
     return email
 
 
+def require_permission(permission: str):
+    """Dependency factory for permission-gated routes (server-side authorization;
+    the UI hiding a button is never the control)."""
+    def _dep(email: str = Depends(current_email)) -> str:
+        if not roles_mod.has_permission(store.get_role(email), permission):
+            raise HTTPException(status_code=403,
+                                detail="You do not have permission to do that.")
+        return email
+    return _dep
+
+
 def _account(email: str) -> Optional[Dict]:
-    """Account summary + the is_admin flag (so the UI can show admin tools)."""
+    """Account summary + role/permission flags (so the UI can reflect access)."""
     a = store.account_summary(email)
     if a is not None:
         a["is_admin"] = is_admin(email)
+        a["role"] = store.get_role(email)
+        a["permissions"] = roles_mod.permissions_for(a["role"])
     return a
 
 
 @router.get("/health")
 def health() -> Dict[str, str]:
-    return {"status": "ok", "service": "q-guide", "version": "1.0"}
+    return {"status": "ok", "service": BRANDING.app_name, "version": "1.0"}
+
+
+@router.get("/branding")
+def branding() -> Dict[str, object]:
+    """Product identity for clients that want it from one place (public)."""
+    return {**BRANDING.as_dict(), "terms_version": TERMS_VERSION}
+
+
+@router.get("/legal")
+def legal_index() -> Dict[str, object]:
+    return {"terms_version": TERMS_VERSION,
+            "documents": [{"slug": d.slug, "title": d.title, "updated": d.updated}
+                          for d in LEGAL_DOCUMENTS.values()]}
+
+
+@router.get("/legal/{slug}")
+def legal_document(slug: str) -> Dict[str, object]:
+    doc = LEGAL_DOCUMENTS.get(slug)
+    if doc is None:
+        raise HTTPException(status_code=404, detail="Unknown legal document.")
+    return doc.as_dict()
 
 
 @router.get("/enzymes")
@@ -235,6 +290,10 @@ class SignupBody(BaseModel):
     name: str
     email: EmailStr
     password: str
+    #: Explicit consent, recorded with a timestamp and the terms version.
+    accept_terms: bool = False
+    institution: Optional[str] = None
+    research_area: Optional[str] = None
 
 
 class LoginBody(BaseModel):
@@ -242,25 +301,65 @@ class LoginBody(BaseModel):
     password: str
 
 
+def _client_key(request: Optional[Request], email: str) -> str:
+    ip = ""
+    if request is not None and request.client:
+        ip = request.client.host or ""
+    return f"{ip}|{(email or '').strip().lower()}"
+
+
+LOGIN_LIMIT = int(os.environ.get("LOGIN_RATE_LIMIT", "10"))
+LOGIN_WINDOW = int(os.environ.get("LOGIN_RATE_WINDOW", "300"))
+
+
 @router.post("/auth/signup")
-def signup(body: SignupBody) -> Dict[str, object]:
-    ok, msg = store.create_user(body.name, body.email, body.password, billing.SIGNUP_BONUS)
+def signup(body: SignupBody, request: Request = None) -> Dict[str, object]:
+    if not body.accept_terms:
+        raise HTTPException(
+            status_code=400,
+            detail="You must accept the Terms of Service and Privacy Policy to "
+                   "create an account.")
+    allowed, retry = ratelimit.check(f"signup:{_client_key(request, body.email)}",
+                                     limit=5, window_seconds=600)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail=f"Too many sign-up attempts. Try again in {retry}s.")
+    ok, msg = store.create_user(
+        body.name, body.email, body.password, billing.SIGNUP_BONUS,
+        institution=body.institution, research_area=body.research_area,
+        terms_version=TERMS_VERSION, accepted_terms=True)
     if not ok:
-        raise HTTPException(status_code=409, detail=msg)
+        # Policy/validation failures are 400; a taken address is 409.
+        code = 409 if "already exists" in msg else 400
+        raise HTTPException(status_code=code, detail=msg)
     email = body.email.strip().lower()
     store.touch_login(email)
+    try:
+        emailer.send_welcome(email, body.name)
+    except Exception:                                     # noqa: BLE001
+        pass
     return {"token": auth.make_token(email), "account": _account(email)}
 
 
 @router.post("/auth/login")
-def login(body: LoginBody) -> Dict[str, object]:
+def login(body: LoginBody, request: Request = None) -> Dict[str, object]:
+    key = f"login:{_client_key(request, body.email)}"
+    allowed, retry = ratelimit.check(key, limit=LOGIN_LIMIT, window_seconds=LOGIN_WINDOW)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail=f"Too many sign-in attempts. Try again in {retry}s.")
     ok, reason = store.authenticate(body.email, body.password)
     if not ok:
         # Distinct codes so the UI can show a precise message.
         if reason == "bad_password":
             raise HTTPException(status_code=401, detail="Incorrect password. Please try again.")
+        if reason == "suspended":
+            raise HTTPException(status_code=403,
+                                detail="This account has been suspended. Contact "
+                                       f"{BRANDING.support_email}.")
         raise HTTPException(status_code=404, detail="No account found for that email.")
     email = body.email.strip().lower()
+    ratelimit.reset(key)
     return {"token": auth.make_token(email), "account": _account(email)}
 
 
@@ -289,17 +388,39 @@ class ForgotBody(BaseModel):
 
 
 @router.post("/auth/forgot-password")
-def forgot_password(body: ForgotBody) -> Dict[str, object]:
-    """DEV MODE: no email provider is configured, so the reset token is returned in
-    the response (clearly labelled). In production this token would be emailed and
-    NEVER returned to the client."""
+def forgot_password(body: ForgotBody, request: Request = None) -> Dict[str, object]:
+    """Send a password-reset link. Always returns 200 so the endpoint cannot be used
+    to enumerate registered addresses.
+
+    The token is only ever included in the response when NO email backend is
+    configured AND QGUIDE_DEV_EMAIL=1 -- so a production deployment (which has SMTP
+    configured) can never leak it."""
     email = body.email.strip().lower()
+    allowed, retry = ratelimit.check(f"forgot:{_client_key(request, email)}",
+                                     limit=5, window_seconds=900)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail=f"Too many reset requests. Try again in {retry}s.")
     exists = store.user_exists(email)
     token = auth.make_reset_token(email) if exists else None
-    # Always return 200 (do not leak which emails exist).
-    return {"ok": True, "dev_mode": True,
-            "message": "Reset link generated. (Dev mode: no email is sent — token returned below.)",
-            "reset_token": token}
+    if exists and token:
+        try:
+            emailer.send_password_reset(email, token)
+        except Exception:                                 # noqa: BLE001
+            pass
+    dev_mode = (not emailer.is_configured()
+                and os.environ.get("QGUIDE_DEV_EMAIL", "") == "1")
+    out: Dict[str, object] = {
+        "ok": True,
+        "dev_mode": dev_mode,
+        "message": ("If an account exists for that address, a password reset link "
+                    "has been sent."),
+    }
+    if dev_mode:
+        out["reset_token"] = token
+        out["message"] = ("Dev mode: no email backend is configured, so the reset "
+                          "token is shown here instead of being emailed.")
+    return out
 
 
 class ResetBody(BaseModel):
@@ -319,12 +440,17 @@ def reset_password(body: ResetBody) -> Dict[str, object]:
 
 
 class ProfileBody(BaseModel):
-    name: str
+    """Self-editable profile fields ONLY. Role, status, plan and credits are
+    intentionally absent: privilege can never be changed by the account holder."""
+    name: Optional[str] = None
+    institution: Optional[str] = Field(default=None, max_length=255)
+    research_area: Optional[str] = Field(default=None, max_length=255)
 
 
 @router.patch("/account/profile")
 def update_profile(body: ProfileBody, email: str = Depends(current_email)) -> Dict[str, object]:
-    if store.update_profile(email, body.name) is None:
+    if store.update_profile(email, body.name, body.institution,
+                            body.research_area) is None:
         raise HTTPException(status_code=404, detail="User not found.")
     return _account(email)
 
@@ -358,7 +484,51 @@ def buy(body: BuyBody, email: str = Depends(current_email)) -> Dict[str, object]
 # --------------------------------------------------------------------------- #
 @router.get("/admin/users")
 def admin_users(_: str = Depends(current_admin)) -> List[Dict[str, object]]:
-    return store.list_all_users()
+    """Account-level user list. Includes a project COUNT per user, never project
+    contents (least privilege: admins operate the platform, they do not read
+    other people's research)."""
+    counts = store.user_project_counts()
+    users = store.list_all_users()
+    for u in users:
+        u["n_projects"] = counts.get(u["email"], 0)
+    return users
+
+
+@router.get("/admin/stats")
+def admin_stats(_: str = Depends(current_admin)) -> Dict[str, object]:
+    return store.admin_stats()
+
+
+@router.get("/admin/activity")
+def admin_activity(limit: int = 50, _: str = Depends(current_admin)) -> List[Dict[str, object]]:
+    return store.admin_activity(limit)
+
+
+@router.get("/admin/health")
+def admin_health(_: str = Depends(current_admin)) -> Dict[str, object]:
+    """Operational health: database, migrations, email backend, environment flags.
+    Secrets are never included -- only whether they are configured."""
+    import platform
+    db = store.db_health()
+    return {
+        "database": db,
+        "email": {"backend": "smtp" if emailer.is_configured() else "console",
+                  "configured": emailer.is_configured()},
+        "auth": {"jwt_secret_configured": auth.JWT_SECRET != auth.DEV_JWT_SECRET,
+                 "token_ttl_days": auth.TOKEN_TTL_SECONDS // 86400},
+        "cors": {"origins": [o for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o]},
+        "runtime": {"python": platform.python_version(),
+                    "environment": os.environ.get("ENVIRONMENT") or os.environ.get("ENV") or "unset"},
+        "quantum": {"dimod_available": _dimod_available()},
+    }
+
+
+def _dimod_available() -> bool:
+    try:
+        import dimod  # noqa: F401
+        return True
+    except Exception:                                     # noqa: BLE001
+        return False
 
 
 class SetCreditsBody(BaseModel):
@@ -371,6 +541,57 @@ def admin_set_credits(body: SetCreditsBody, admin: str = Depends(current_admin))
     u = store.set_credits(body.email, body.credits, admin)
     if u is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    return u
+
+
+class SetRoleBody(BaseModel):
+    email: EmailStr
+    role: str
+
+
+@router.get("/admin/roles")
+def admin_roles(_: str = Depends(current_admin)) -> Dict[str, object]:
+    return {"roles": list(roles_mod.ASSIGNABLE_ROLES),
+            "permissions": {r: roles_mod.permissions_for(r)
+                            for r in roles_mod.ASSIGNABLE_ROLES}}
+
+
+@router.post("/admin/role")
+def admin_set_role(body: SetRoleBody,
+                   admin: str = Depends(current_admin)) -> Dict[str, object]:
+    """Assign a role. Guard rails: only admins reach this, and the last remaining
+    admin cannot demote themselves (which would lock the instance out)."""
+    role = roles_mod.normalize(body.role)
+    if body.role.strip().upper() not in roles_mod.ASSIGNABLE_ROLES:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {body.role}")
+    target = body.email.strip().lower()
+    if target == admin.strip().lower() and role != roles_mod.ADMIN:
+        if store.count_admins() <= 1:
+            raise HTTPException(status_code=400,
+                                detail="You are the only administrator — promote "
+                                       "someone else before removing your own admin role.")
+    u = store.set_role(target, role, admin)
+    if u is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    return u
+
+
+class SetStatusBody(BaseModel):
+    email: EmailStr
+    status: str
+
+
+@router.post("/admin/status")
+def admin_set_status(body: SetStatusBody,
+                     admin: str = Depends(current_admin)) -> Dict[str, object]:
+    target = body.email.strip().lower()
+    if target == admin.strip().lower():
+        raise HTTPException(status_code=400,
+                            detail="You cannot change your own account status.")
+    u = store.set_status(target, body.status, admin)
+    if u is None:
+        raise HTTPException(status_code=400,
+                            detail="Unknown user or status (use 'active' or 'suspended').")
     return u
 
 

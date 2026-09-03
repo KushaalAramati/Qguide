@@ -61,7 +61,7 @@ function ProfileSection({ account, setAccount, signOut }: any) {
   const [msg, setMsg] = useState("");
   async function save() {
     setBusy(true); setMsg("");
-    try { const a = await api.updateProfile(name); setAccount(a); setMsg("Saved."); }
+    try { const a = await api.updateProfile({ name }); setAccount(a); setMsg("Saved."); }
     catch (e: any) { setMsg(e.message || "Failed."); } finally { setBusy(false); }
   }
   return (

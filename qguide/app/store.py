@@ -16,12 +16,15 @@ from __future__ import annotations
 import binascii
 import hashlib
 import os
+import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from sqlalchemy import Column, Float, Integer, String, Text, select, text
 
+from qguide.app import roles as roles_mod
 from qguide.app.db import Base, engine, session_scope
+from qguide.app.migrations import run_migrations
 from qguide.app.schemas import DesignRequest, DesignResponse
 
 
@@ -41,6 +44,13 @@ class User(Base):
     fcounter = Column(Integer, default=0)
     created = Column(String(32), nullable=False)
     last_login = Column(String(32))
+    # --- access control / profile (see migrations 0002) ---
+    role = Column(String(32), nullable=False, default=roles_mod.USER)
+    status = Column(String(16), nullable=False, default="active")
+    institution = Column(String(255))
+    research_area = Column(String(255))
+    terms_accepted_at = Column(String(32))
+    terms_version = Column(String(16))
 
 
 class Transaction(Base):
@@ -81,24 +91,23 @@ class Folder(Base):
     fcounter_placeholder = Column(Integer, default=0)
 
 
-def init_db() -> None:
+_DB_READY = False
+
+
+def init_db(force: bool = False) -> None:
+    """Create tables and run pending migrations. Cheap to call repeatedly: the
+    work is done once per process unless `force` is set."""
+    global _DB_READY
+    if _DB_READY and not force:
+        return
     Base.metadata.create_all(engine)
-    _migrate()
+    run_migrations(engine)
+    _DB_READY = True
 
 
 def _migrate() -> None:
-    """Best-effort additive migrations for DBs created before a column existed.
-    Each ALTER runs in its own transaction; a 'duplicate column' error (column
-    already present) is swallowed. Portable across SQLite and Postgres."""
-    for stmt in ["ALTER TABLE users ADD COLUMN last_login VARCHAR(32)",
-                 "ALTER TABLE projects ADD COLUMN folder_id VARCHAR(32)",
-                 "ALTER TABLE projects ADD COLUMN archived INTEGER DEFAULT 0",
-                 "ALTER TABLE users ADD COLUMN fcounter INTEGER DEFAULT 0"]:
-        try:
-            with engine.begin() as conn:
-                conn.execute(text(stmt))
-        except Exception:
-            pass
+    """Deprecated alias kept for callers outside this package."""
+    run_migrations(engine)
 
 
 # --------------------------------------------------------------------------- #
@@ -121,10 +130,39 @@ def _now() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M")
 
 
+MIN_PASSWORD_LENGTH = 8
+
+
+def validate_password(pw: str) -> Tuple[bool, str]:
+    """Single source of truth for the password policy (signup, change, reset)."""
+    pw = pw or ""
+    if len(pw) < MIN_PASSWORD_LENGTH:
+        return False, f"Password must be at least {MIN_PASSWORD_LENGTH} characters."
+    if pw.isdigit() or pw.isalpha():
+        return False, "Password must contain both letters and numbers."
+    if pw.lower() in {"password", "password1", "12345678", "qwertyui"}:
+        return False, "That password is too common. Please choose another."
+    return True, "ok"
+
+
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$")
+
+
+def validate_email(email: str) -> bool:
+    return bool(_EMAIL_RE.match((email or "").strip()))
+
+
 def _user_dict(u: User) -> Dict:
+    role = roles_mod.normalize(getattr(u, "role", None))
     return {"name": u.name, "email": u.email, "plan": u.plan, "credits": u.credits,
             "runs": u.runs, "counter": u.counter, "created": u.created,
-            "last_login": u.last_login}
+            "last_login": u.last_login,
+            "role": role,
+            "status": getattr(u, "status", None) or "active",
+            "institution": getattr(u, "institution", None),
+            "research_area": getattr(u, "research_area", None),
+            "terms_accepted_at": getattr(u, "terms_accepted_at", None),
+            "permissions": roles_mod.permissions_for(role)}
 
 
 def _tx_dict(t: Transaction) -> Dict:
@@ -135,21 +173,36 @@ def _tx_dict(t: Transaction) -> Dict:
 # --------------------------------------------------------------------------- #
 # Accounts                                                                      #
 # --------------------------------------------------------------------------- #
-def create_user(name: str, email: str, password: str, bonus: int) -> Tuple[bool, str]:
+def create_user(name: str, email: str, password: str, bonus: int,
+                *, institution: Optional[str] = None,
+                research_area: Optional[str] = None,
+                terms_version: Optional[str] = None,
+                accepted_terms: bool = False) -> Tuple[bool, str]:
+    """Create an account. The role is NEVER taken from the caller: new accounts are
+    always USER unless the email is in the environment-configured admin allowlist."""
     email = (email or "").strip().lower()
     name = (name or "").strip()
     if not name or not email or not password:
         return False, "Please fill in name, email and password."
-    if "@" not in email:
-        return False, "Please enter a valid email."
+    if not validate_email(email):
+        return False, "Please enter a valid email address."
+    ok, why = validate_password(password)
+    if not ok:
+        return False, why
     init_db()
+    role = (roles_mod.ADMIN if email in roles_mod.bootstrap_admin_emails()
+            else roles_mod.USER)
     with session_scope() as s:
         if s.get(User, email):
             return False, "An account with that email already exists — sign in instead."
         salt, h = _make_pw(password)
         now = _now()
         s.add(User(email=email, name=name, pw_salt=salt, pw_hash=h, plan="Free trial",
-                   credits=bonus, runs=0, counter=0, created=now))
+                   credits=bonus, runs=0, counter=0, created=now,
+                   role=role, status="active",
+                   institution=(institution or None), research_area=(research_area or None),
+                   terms_accepted_at=(now if accepted_terms else None),
+                   terms_version=(terms_version if accepted_terms else None)))
         s.add(Transaction(email=email, ts=now, type="bonus", amount=bonus,
                           balance=bonus, descr="Welcome bonus", price=0.0))
     return True, "Account created."
@@ -166,6 +219,13 @@ def authenticate(email: str, password: str) -> Tuple[bool, str]:
             return False, "no_user"
         if not _check_pw(password, u.pw_salt, u.pw_hash):
             return False, "bad_password"
+        if (getattr(u, "status", "active") or "active") != "active":
+            return False, "suspended"
+        # Environment-configured admins are promoted on sign-in (bootstrap path);
+        # this is the only automatic role change in the system.
+        if email in roles_mod.bootstrap_admin_emails() and \
+                roles_mod.normalize(u.role) != roles_mod.ADMIN:
+            u.role = roles_mod.ADMIN
         u.last_login = _now()
     return True, "ok"
 
@@ -359,8 +419,9 @@ def load_account(email: str) -> Optional[Dict]:
 # --------------------------------------------------------------------------- #
 def change_password(email: str, current: str, new: str) -> Tuple[bool, str]:
     email = (email or "").strip().lower()
-    if not new or len(new) < 6:
-        return False, "New password must be at least 6 characters."
+    ok, why = validate_password(new)
+    if not ok:
+        return False, why
     with session_scope() as s:
         u = s.get(User, email)
         if not u:
@@ -375,8 +436,9 @@ def change_password(email: str, current: str, new: str) -> Tuple[bool, str]:
 def reset_password(email: str, new: str) -> Tuple[bool, str]:
     """Set a new password without the old one (used by a verified reset token)."""
     email = (email or "").strip().lower()
-    if not new or len(new) < 6:
-        return False, "New password must be at least 6 characters."
+    ok, why = validate_password(new)
+    if not ok:
+        return False, why
     with session_scope() as s:
         u = s.get(User, email)
         if not u:
@@ -392,7 +454,11 @@ def user_exists(email: str) -> bool:
         return s.get(User, email) is not None
 
 
-def update_profile(email: str, name: Optional[str] = None) -> Optional[Dict]:
+def update_profile(email: str, name: Optional[str] = None,
+                   institution: Optional[str] = None,
+                   research_area: Optional[str] = None) -> Optional[Dict]:
+    """Self-service profile edit. Deliberately narrow: role, status, plan and
+    credits are NOT editable here, so a user can never escalate their own access."""
     email = (email or "").strip().lower()
     with session_scope() as s:
         u = s.get(User, email)
@@ -400,6 +466,10 @@ def update_profile(email: str, name: Optional[str] = None) -> Optional[Dict]:
             return None
         if name is not None and name.strip():
             u.name = name.strip()
+        if institution is not None:
+            u.institution = institution.strip() or None
+        if research_area is not None:
+            u.research_area = research_area.strip() or None
         return _user_dict(u)
 
 
@@ -489,3 +559,180 @@ def set_archived(email: str, pid: str, archived: bool) -> bool:
             return False
         p.archived = 1 if archived else 0
         return True
+
+
+# --- Roles, account status and admin analytics ------------------------------ #
+def get_role(email: str) -> str:
+    """Authoritative role lookup -- always read from the database, never from a
+    token claim or a request body."""
+    with session_scope() as s:
+        u = s.get(User, (email or "").strip().lower())
+        return roles_mod.normalize(getattr(u, "role", None)) if u else roles_mod.USER
+
+
+def get_status(email: str) -> Optional[str]:
+    with session_scope() as s:
+        u = s.get(User, (email or "").strip().lower())
+        return (getattr(u, "status", "active") or "active") if u else None
+
+
+def set_role(email: str, role: str, actor_email: str) -> Optional[Dict]:
+    """Assign a role (admin action). Returns the updated user, or None if unknown."""
+    email = (email or "").strip().lower()
+    role = roles_mod.normalize(role)
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u:
+            return None
+        u.role = role
+        s.add(Transaction(email=email, ts=_now(), type="admin", amount=0,
+                          balance=u.credits,
+                          descr=f"Role set to {role} by {actor_email}", price=0.0))
+        return _user_dict(u)
+
+
+def set_status(email: str, status: str, actor_email: str) -> Optional[Dict]:
+    status = (status or "").strip().lower()
+    if status not in ("active", "suspended"):
+        return None
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u:
+            return None
+        u.status = status
+        s.add(Transaction(email=email, ts=_now(), type="admin", amount=0,
+                          balance=u.credits,
+                          descr=f"Account {status} by {actor_email}", price=0.0))
+        return _user_dict(u)
+
+
+def count_admins() -> int:
+    with session_scope() as s:
+        return len([u for u in s.scalars(select(User)).all()
+                    if roles_mod.normalize(getattr(u, "role", None)) == roles_mod.ADMIN])
+
+
+def ensure_bootstrap_admins() -> List[str]:
+    """Promote every ADMIN_EMAILS address that already has an account. Called at
+    startup so a fresh deployment has an administrator without any UI action."""
+    wanted = roles_mod.bootstrap_admin_emails()
+    if not wanted:
+        return []
+    promoted = []
+    with session_scope() as s:
+        for email in wanted:
+            u = s.get(User, email)
+            if u and roles_mod.normalize(getattr(u, "role", None)) != roles_mod.ADMIN:
+                u.role = roles_mod.ADMIN
+                promoted.append(email)
+    return promoted
+
+
+# --------------------------------------------------------------------------- #
+# Admin analytics (account-level only -- never project contents)               #
+# --------------------------------------------------------------------------- #
+def _cutoff(days: int) -> str:
+    from datetime import timedelta
+    return (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d %H:%M")
+
+
+def admin_stats() -> Dict:
+    """Aggregate platform statistics for the admin dashboard. Deliberately limited
+    to account/usage metadata: no sequences, results or project names leave here."""
+    from sqlalchemy import func
+    d7, d30 = _cutoff(7), _cutoff(30)
+    with session_scope() as s:
+        users = s.scalars(select(User)).all()
+        n_users = len(users)
+        active_30 = sum(1 for u in users if (u.last_login or "") >= d30)
+        active_7 = sum(1 for u in users if (u.last_login or "") >= d7)
+        new_7 = sum(1 for u in users if (u.created or "") >= d7)
+        new_30 = sum(1 for u in users if (u.created or "") >= d30)
+        suspended = sum(1 for u in users if (getattr(u, "status", "active") or "active") != "active")
+        by_plan: Dict[str, int] = {}
+        by_role: Dict[str, int] = {}
+        for u in users:
+            by_plan[u.plan] = by_plan.get(u.plan, 0) + 1
+            r = roles_mod.normalize(getattr(u, "role", None))
+            by_role[r] = by_role.get(r, 0) + 1
+
+        n_projects = s.scalar(select(func.count()).select_from(Project)) or 0
+        projects_30 = s.scalar(select(func.count()).select_from(Project)
+                               .where(Project.created >= d30)) or 0
+        projects_7 = s.scalar(select(func.count()).select_from(Project)
+                              .where(Project.created >= d7)) or 0
+        total_runs = sum(u.runs for u in users)
+        credits_out = sum(u.credits for u in users)
+        purchases = s.scalars(select(Transaction).where(Transaction.type == "purchase")).all()
+        revenue = round(sum(t.price or 0.0 for t in purchases), 2)
+        revenue_30 = round(sum(t.price or 0.0 for t in purchases if t.ts >= d30), 2)
+
+        recent = sorted(users, key=lambda u: u.created or "", reverse=True)[:10]
+        recent_signups = [{"name": u.name, "email": u.email, "created": u.created,
+                           "plan": u.plan, "role": roles_mod.normalize(getattr(u, "role", None))}
+                          for u in recent]
+
+        # 12-week signup / project series for a small trend chart.
+        from datetime import timedelta
+        weeks = []
+        now = datetime.now()
+        for i in range(11, -1, -1):
+            start = (now - timedelta(days=7 * (i + 1))).strftime("%Y-%m-%d %H:%M")
+            end = (now - timedelta(days=7 * i)).strftime("%Y-%m-%d %H:%M")
+            weeks.append({
+                "week_ending": end[:10],
+                "signups": sum(1 for u in users if start <= (u.created or "") < end),
+                "projects": int(s.scalar(select(func.count()).select_from(Project)
+                                         .where(Project.created >= start,
+                                                Project.created < end)) or 0),
+            })
+
+    return {
+        "users": {"total": n_users, "active_7d": active_7, "active_30d": active_30,
+                  "new_7d": new_7, "new_30d": new_30, "suspended": suspended},
+        "projects": {"total": int(n_projects), "new_7d": int(projects_7),
+                     "new_30d": int(projects_30)},
+        "usage": {"total_runs": total_runs, "credits_in_circulation": credits_out},
+        "billing": {"revenue_total": revenue, "revenue_30d": revenue_30,
+                    "purchases": len(purchases), "users_by_plan": by_plan},
+        "users_by_role": by_role,
+        "recent_signups": recent_signups,
+        "weekly": weeks,
+    }
+
+
+def admin_activity(limit: int = 50) -> List[Dict]:
+    """Recent platform activity from the ledger (runs, purchases, admin actions).
+    Descriptions are already free of sequence data; project names are not included."""
+    limit = max(1, min(int(limit), 200))
+    with session_scope() as s:
+        rows = s.scalars(select(Transaction).order_by(Transaction.id.desc())
+                         .limit(limit)).all()
+        return [{"ts": t.ts, "email": t.email, "type": t.type, "amount": t.amount,
+                 "balance": t.balance, "price": t.price,
+                 # usage descriptions embed the gene name -> keep only the kind
+                 "desc": ("Design run" if t.type == "usage" else t.descr)}
+                for t in rows]
+
+
+def user_project_counts() -> Dict[str, int]:
+    from sqlalchemy import func
+    with session_scope() as s:
+        rows = s.execute(select(Project.email, func.count()).group_by(Project.email)).all()
+        return {email: int(n) for email, n in rows}
+
+
+def db_health() -> Dict:
+    """Cheap liveness probe + migration version for the admin health panel."""
+    from sqlalchemy import text as _text
+    out: Dict = {"ok": False, "dialect": engine.dialect.name, "migration_version": None}
+    try:
+        with engine.connect() as conn:
+            conn.execute(_text("SELECT 1"))
+            v = conn.execute(_text("SELECT MAX(version) FROM schema_migrations")).scalar()
+        out["ok"] = True
+        out["migration_version"] = int(v) if v is not None else 0
+    except Exception as exc:                              # noqa: BLE001
+        out["error"] = str(exc)[:200]
+    return out

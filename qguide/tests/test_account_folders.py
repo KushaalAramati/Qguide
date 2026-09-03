@@ -10,6 +10,8 @@ for _ext in ("", "-wal", "-shm"):
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
 os.environ["JWT_SECRET"] = "test-secret"
 os.environ.setdefault("ADMIN_EMAILS", "admin@test.com")  # keep order-independent with test_api
+os.environ["QGUIDE_DEV_EMAIL"] = "1"   # no SMTP backend in tests -> token returned inline
+os.environ["EMAIL_BACKEND"] = "console"
 
 from fastapi.testclient import TestClient  # noqa: E402
 from qguide.app.main import app  # noqa: E402
@@ -18,7 +20,8 @@ client = TestClient(app)
 
 
 def _signup(email, pw="pw123456"):
-    return client.post("/auth/signup", json={"name": "T", "email": email, "password": pw})
+    return client.post("/auth/signup", json={"name": "T", "email": email,
+                                             "password": pw, "accept_terms": True})
 
 
 def _auth(email, pw="pw123456"):
@@ -49,11 +52,11 @@ def test_forgot_and_reset_password_dev_mode():
     body = r.json()
     assert body["dev_mode"] is True and body["reset_token"]           # dev mode returns the token
     tok = body["reset_token"]
-    r = client.post("/auth/reset-password", json={"token": tok, "new_password": "reset123"})
+    r = client.post("/auth/reset-password", json={"token": tok, "new_password": "reset1234"})
     assert r.status_code == 200 and r.json()["token"]
-    assert client.post("/auth/login", json={"email": "fp@test.com", "password": "reset123"}).status_code == 200
+    assert client.post("/auth/login", json={"email": "fp@test.com", "password": "reset1234"}).status_code == 200
     # a bogus token is rejected
-    assert client.post("/auth/reset-password", json={"token": "nope", "new_password": "x123456"}).status_code == 400
+    assert client.post("/auth/reset-password", json={"token": "nope", "new_password": "x1234567"}).status_code == 400
 
 
 def test_forgot_unknown_email_does_not_leak():

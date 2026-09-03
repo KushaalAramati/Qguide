@@ -5,6 +5,7 @@ import { Card, CardTitle, Metric, Button } from "@/components/ui";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { downloadCsv } from "@/lib/csv";
+import { APP_SLUG } from "@/lib/branding";
 
 export default function AdminPage() {
   return <Shell><AdminView /></Shell>;
@@ -61,7 +62,7 @@ function AdminView() {
       created: u.created,
       last_login: u.last_login || "",
     }));
-    downloadCsv(`qguide_users_${new Date().toISOString().slice(0, 10)}.csv`, rows);
+    downloadCsv(`${APP_SLUG}_users_${new Date().toISOString().slice(0, 10)}.csv`, rows);
   }
 
   return (

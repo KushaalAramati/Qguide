@@ -6,6 +6,8 @@ import { useRequireAuth, useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { ValidationBanner } from "@/components/ValidationBanner";
+import { LogoMark } from "@/components/Brand";
+import { BRANDING, APP_SLUG } from "@/lib/branding";
 
 /**
  * Application chrome — icon rail, project explorer, command bar, status bar.
@@ -20,8 +22,8 @@ type RailItem = { href: string; glyph: string; label: string };
 function Rail({ items, path, name }: { items: RailItem[]; path: string; name: string }) {
   return (
     <nav className="w-[46px] flex-none bg-chrome border-r border-border flex flex-col items-center py-2 gap-0.5">
-      <div className="w-[26px] h-[26px] mb-2.5 grid place-items-center border border-brand bg-brand/[0.12] text-brand text-[13px] font-semibold">
-        Q
+      <div className="mb-2.5" title={BRANDING.APP_NAME}>
+        <LogoMark size={26} />
       </div>
       {items.map((it) => {
         const on = it.href === "/dashboard" ? path === it.href : path.startsWith(it.href);
@@ -258,7 +260,7 @@ export function Shell({ children }: { children: ReactNode }) {
       {/* ---- main column ---- */}
       <div className="flex-1 min-w-0 flex flex-col">
         <div className="h-[34px] flex-none bg-surface border-b border-border flex items-center gap-2 px-3 text-[11.5px]">
-          <span className="text-brand">qguide ›</span>
+          <span className="text-brand">{APP_SLUG} ›</span>
           <span className="text-ink truncate">{commandLine}</span>
           <span className="inline-block w-[7px] h-[14px] bg-brand opacity-70" aria-hidden />
           <span className="flex-1" />

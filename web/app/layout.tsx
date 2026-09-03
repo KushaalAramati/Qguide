@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { IBM_Plex_Mono, IBM_Plex_Sans } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/lib/auth";
+import { BRANDING } from "@/lib/branding";
 
 // Mono-first interface. IBM Plex Mono is the UI face, not just the code face —
 // sequences, scores and positions all have to align vertically to be scannable.
@@ -20,9 +21,13 @@ const plexSans = IBM_Plex_Sans({
   display: "swap",
 });
 
+// Titles and descriptions come from the central branding config — never hardcode
+// the product name in a page or component.
 export const metadata: Metadata = {
-  title: "QGuide — Explainable CRISPR guide-RNA design",
-  description: "Context-aware, explainable CRISPR guide RNA recommendation.",
+  title: { default: `${BRANDING.APP_NAME} — ${BRANDING.TAGLINE}`,
+           template: `%s · ${BRANDING.APP_NAME}` },
+  description: BRANDING.APP_DESCRIPTION,
+  applicationName: BRANDING.APP_NAME,
 };
 
 // Applied before first paint so the theme never flashes. Falls back to the OS

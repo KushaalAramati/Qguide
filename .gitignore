@@ -27,3 +27,5 @@ web/.next/
 
 # Secrets (never commit)
 .streamlit/secrets.toml
+*.db-journal
+_websrc.tgz

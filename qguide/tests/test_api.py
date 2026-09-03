@@ -12,6 +12,8 @@ for _ext in ("", "-wal", "-shm"):
 os.environ["DATABASE_URL"] = f"sqlite:///{_DB}"
 os.environ["JWT_SECRET"] = "test-secret"
 os.environ["ADMIN_EMAILS"] = "admin@test.com"
+os.environ["QGUIDE_DEV_EMAIL"] = "1"
+os.environ["EMAIL_BACKEND"] = "console"
 
 from fastapi.testclient import TestClient  # noqa: E402
 
@@ -25,7 +27,8 @@ EXAMPLE = ("ATGGCCTGACCGGATGCACCGGTGAACCTTGGCAGTCCATGGAGACCTTAGGCTAACCGGT"
 
 
 def _signup(email, name="Tester", pw="pw123456"):
-    return client.post("/auth/signup", json={"name": name, "email": email, "password": pw})
+    return client.post("/auth/signup", json={"name": name, "email": email,
+                                             "password": pw, "accept_terms": True})
 
 
 def _auth(email):

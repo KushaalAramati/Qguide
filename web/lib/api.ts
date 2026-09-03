@@ -1,4 +1,4 @@
-// Typed client for the Q-Guide FastAPI backend.
+// Typed client for the backend API. Product naming lives in lib/branding.ts.
 const BASE =
   process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") || "http://localhost:8000";
 
@@ -31,6 +31,8 @@ async function req(path: string, opts: RequestInit = {}): Promise<any> {
   return res.json();
 }
 
+export type Role = "USER" | "RESEARCHER" | "ORGANIZATION_ADMIN" | "ADMIN";
+
 export interface Account {
   name: string;
   email: string;
@@ -40,6 +42,12 @@ export interface Account {
   created: string;
   last_login?: string | null;
   is_admin?: boolean;
+  role?: Role;
+  status?: "active" | "suspended";
+  permissions?: string[];
+  institution?: string | null;
+  research_area?: string | null;
+  terms_accepted_at?: string | null;
   transactions: {
     ts: string;
     type: string;
@@ -50,9 +58,20 @@ export interface Account {
   }[];
 }
 
+export interface SignupInput {
+  name: string;
+  email: string;
+  password: string;
+  accept_terms: boolean;
+  institution?: string;
+  research_area?: string;
+}
+
 export const api = {
-  signup: (name: string, email: string, password: string) =>
-    req("/auth/signup", { method: "POST", body: JSON.stringify({ name, email, password }) }),
+  signup: (input: SignupInput) =>
+    req("/auth/signup", { method: "POST", body: JSON.stringify(input) }),
+  branding: () => req("/branding"),
+  legal: (slug: string) => req(`/legal/${slug}`),
   login: (email: string, password: string) =>
     req("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   me: (): Promise<Account> => req("/me"),
@@ -78,8 +97,8 @@ export const api = {
     req("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) }),
   resetPassword: (token: string, new_password: string) =>
     req("/auth/reset-password", { method: "POST", body: JSON.stringify({ token, new_password }) }),
-  updateProfile: (name: string) =>
-    req("/account/profile", { method: "PATCH", body: JSON.stringify({ name }) }),
+  updateProfile: (patch: { name?: string; institution?: string; research_area?: string }) =>
+    req("/account/profile", { method: "PATCH", body: JSON.stringify(patch) }),
   // Folders / project organisation
   folders: () => req("/folders"),
   createFolder: (name: string, parent_id?: string | null) =>
@@ -93,6 +112,11 @@ export const api = {
   adminUsers: () => req("/admin/users"),
   adminSetCredits: (email: string, credits: number) =>
     req("/admin/credits", { method: "POST", body: JSON.stringify({ email, credits }) }),
+  adminRoles: () => req("/admin/roles"),
+  adminSetRole: (email: string, role: string) =>
+    req("/admin/role", { method: "POST", body: JSON.stringify({ email, role }) }),
+  adminSetStatus: (email: string, status: "active" | "suspended") =>
+    req("/admin/status", { method: "POST", body: JSON.stringify({ email, status }) }),
 };
 
 export { BASE };

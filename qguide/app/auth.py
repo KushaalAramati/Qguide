@@ -12,7 +12,10 @@ from typing import Optional
 
 import jwt
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-insecure-change-me")
+#: Development fallback. `main._check_production_config` refuses to boot a
+#: production deployment that is still using it.
+DEV_JWT_SECRET = "dev-insecure-change-me"
+JWT_SECRET = os.environ.get("JWT_SECRET", DEV_JWT_SECRET)
 JWT_ALGO = "HS256"
 TOKEN_TTL_SECONDS = 60 * 60 * 24 * 7   # 7 days
 
