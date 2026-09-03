@@ -4,7 +4,7 @@ import Link from "next/link";
 import { Card, CardTitle, Metric, BarRow } from "@/components/ui";
 import { EnsembleBadges, EnsemblePanel } from "@/components/Ensemble";
 import { useProject } from "@/lib/projectCtx";
-import { downloadCsv } from "@/lib/csv";
+import { exportGuidesCsv } from "@/lib/exports";
 
 const strandOf = (x: any) => (typeof x?.strand === "string" ? x.strand : x?.strand?.value || "+");
 
@@ -28,16 +28,7 @@ export default function BasicResults() {
   const highRisk = guides.filter((x) => x.off_target.risk_score >= 0.4).length;
   const pamCount = guides.length;
 
-  function exportCsv() {
-    const rows = guides.map((x: any, i: number) => ({
-      rank: i + 1, guide_id: x.guide_id, sequence: x.sequence, pam: x.pam,
-      strand: strandOf(x), position: x.position, gc_content: x.gc_content.toFixed(3),
-      on_target: x.scores.on_target.toFixed(3), knockout_prob: x.outcome.knockout_prob.toFixed(3),
-      off_target_risk: x.off_target.risk_score.toFixed(3), final_score: x.final_score.toFixed(3),
-      confidence: x.confidence.toFixed(3), in_optimized_set: opt.selected_guide_ids.includes(x.guide_id),
-    }));
-    downloadCsv(`${proj.name}_${id}_guides.csv`, rows);
-  }
+  const exportCsv = () => exportGuidesCsv(proj, id, guides, opt);
 
   const info: [string, any][] = [
     ["Organism", req.organism], ["Cas enzyme", req.cas_enzyme], ["PAM", g.pam],

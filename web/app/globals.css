@@ -187,6 +187,14 @@ body {
   .dtable tr.is-selected td { @apply bg-brand/[0.08] text-brand; }
   .dtable tr.is-selected td:first-child { box-shadow: inset 2px 0 0 rgb(var(--qg-accent)); }
 
+  /* ---- sidebar tooltip (collapsed state) ---------------------------------- */
+  .nav-tip {
+    @apply pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-2 z-50
+           whitespace-nowrap border border-border bg-surface px-2.5 py-1.5 text-[11px]
+           leading-snug opacity-0 transition-opacity duration-100;
+  }
+  .group:hover > .nav-tip, .group:focus-within > .nav-tip { @apply opacity-100; }
+
   /* ---- caveat ------------------------------------------------------------ */
   /* Sits under the panel whose numbers it qualifies, never as a global bar. */
   .caveat {

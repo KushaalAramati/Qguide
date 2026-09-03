@@ -3,8 +3,9 @@
 // shared project load so each feature page can assume data is present.
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { useProject } from "@/lib/projectCtx";
+import { exportGuidesCsv, exportProjectJson } from "@/lib/exports";
 
 const NAV: [string, string][] = [
   ["", "basic"],
@@ -29,6 +30,7 @@ function Fact({ k, v }: { k: string; v: ReactNode }) {
 export function ProjectFrame({ children }: { children: ReactNode }) {
   const { id, proj, req, opt, err, loading, guides, sel, setSel, g } = useProject();
   const path = usePathname();
+  const [exportOpen, setExportOpen] = useState(false);
 
   if (err) {
     return (
@@ -47,9 +49,10 @@ export function ProjectFrame({ children }: { children: ReactNode }) {
     <div className="flex flex-col gap-3">
       {/* ---- header ---- */}
       <div className="border-b border-border pb-0">
-        <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div>
-            <h1 className="text-[16px] font-medium text-title tracking-tightest">
+        <Link href="/projects" className="text-[10.5px] text-faint hover:text-brand">‹ projects</Link>
+        <div className="flex items-start justify-between gap-4 flex-wrap mt-1">
+          <div className="min-w-0">
+            <h1 className="text-[20px] leading-tight font-medium text-title tracking-tightest">
               {proj.name}
               <span className="ml-2.5 text-[11.5px] text-faint font-normal">{id}</span>
             </h1>
@@ -59,19 +62,39 @@ export function ProjectFrame({ children }: { children: ReactNode }) {
               <Fact k="organism" v={req.organism} />
               <Fact k="optimizer" v={opt?.method ?? "—"} />
               <Fact k="guides" v={guides.length} />
+              <Fact k="created" v={proj.created} />
             </div>
           </div>
 
-          <label className="flex items-center gap-2 text-[10.5px]">
-            <span className="text-faint">guide</span>
-            <select
-              className="border border-border bg-well px-2 py-1 text-[11.5px] text-ink outline-none focus:border-brand"
-              value={sel}
-              onChange={(e) => setSel(e.target.value)}
-            >
-              {guides.map((x: any) => <option key={x.guide_id}>{x.guide_id}</option>)}
-            </select>
-          </label>
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="flex items-center gap-2 text-[10.5px]">
+              <span className="text-faint">guide</span>
+              <select
+                className="border border-border bg-well px-2 py-1 text-[11.5px] text-ink outline-none focus:border-brand"
+                value={sel}
+                onChange={(e) => setSel(e.target.value)}
+              >
+                {guides.map((x: any) => <option key={x.guide_id}>{x.guide_id}</option>)}
+              </select>
+            </label>
+            <div className="relative">
+              <button onClick={() => setExportOpen((v) => !v)} className="btn-primary text-[12px]" aria-haspopup="menu" aria-expanded={exportOpen}>
+                Export results ▾
+              </button>
+              {exportOpen && (
+                <div role="menu" className="absolute right-0 z-20 mt-0.5 w-56 bg-surface border border-border p-1 text-[11.5px]" onMouseLeave={() => setExportOpen(false)}>
+                  <button role="menuitem" onClick={() => { exportGuidesCsv(proj, id, guides, opt); setExportOpen(false); }} className="w-full text-left px-2 py-1.5 text-ink hover:bg-brand/[0.08] hover:text-brand">
+                    Guide table (CSV)
+                    <span className="block text-[10.5px] text-faint">ranked guides with scores and set membership</span>
+                  </button>
+                  <button role="menuitem" onClick={() => { exportProjectJson(proj, id); setExportOpen(false); }} className="w-full text-left px-2 py-1.5 text-ink hover:bg-brand/[0.08] hover:text-brand">
+                    Full project (JSON)
+                    <span className="block text-[10.5px] text-faint">inputs, all guides, optimised set, provenance</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* ---- view tabs ---- */}

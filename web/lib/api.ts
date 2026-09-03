@@ -71,6 +71,7 @@ export const api = {
   signup: (input: SignupInput) =>
     req("/auth/signup", { method: "POST", body: JSON.stringify(input) }),
   branding: () => req("/branding"),
+  health: () => req("/health"),
   legal: (slug: string) => req(`/legal/${slug}`),
   login: (email: string, password: string) =>
     req("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),

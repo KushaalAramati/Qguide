@@ -4,6 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Card, CardTitle, Metric, Button } from "@/components/ui";
+import { PageHeader } from "@/components/PageHeader";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 
@@ -20,10 +21,12 @@ function AccountView() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <div className="font-display font-extrabold text-3xl">Account</div>
-        <div className="text-muted">{account.name} · {account.email}</div>
-      </div>
+      <PageHeader
+        eyebrow="settings"
+        title="Account"
+        description={`${account.name} · ${account.email}${account.institution ? ` · ${account.institution}` : ""}`}
+        actions={<span className="text-[11px] text-faint">{account.role?.toLowerCase().replace("_", " ")}</span>}
+      />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <Metric label="Credit balance" value={account.credits} sub="available" color="brand" />

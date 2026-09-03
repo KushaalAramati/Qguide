@@ -2,8 +2,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Shell } from "@/components/Shell";
-import { Card, CardTitle, Button } from "@/components/ui";
-import { Dna } from "@/components/Dna";
+import { Panel, Button } from "@/components/ui";
+import { PageHeader } from "@/components/PageHeader";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -16,24 +16,23 @@ const STEPS = ["Input sequence", "Generate candidates", "Score guides", "Run opt
 
 function Stepper({ active }: { active: number }) {
   return (
-    <div className="flex items-center my-2">
-      {STEPS.map((s, i) => {
+    <ol className="flex items-center flex-wrap gap-y-1 text-[11px]" aria-label="Design workflow">
+      {STEPS.map((st, i) => {
         const n = i + 1;
         const state = n < active ? "done" : n === active ? "active" : "todo";
         return (
-          <div key={s} className="flex items-center">
-            <div className="flex items-center gap-2">
-              <div className={`w-7 h-7 rounded-full grid place-items-center text-sm font-extrabold border-2
-                ${state === "active" ? "bg-brand border-brand text-white" :
-                  state === "done" ? "bg-brand-light border-brand-light text-brand-dark" :
-                  "bg-white border-border text-muted"}`}>{state === "done" ? "✓" : n}</div>
-              <div className={`text-sm font-bold ${state === "todo" ? "text-muted" : "text-ink"} whitespace-nowrap`}>{s}</div>
-            </div>
-            {i < STEPS.length - 1 && <div className="h-0.5 bg-border w-6 mx-2" />}
-          </div>
+          <li key={st} className="flex items-center">
+            <span className={`w-5 h-5 grid place-items-center border text-[10px] tabular-nums ${
+              state === "active" ? "bg-brand border-brand text-bg" :
+              state === "done" ? "border-brand text-brand" : "border-border text-faint"}`}>
+              {state === "done" ? "✓" : n}
+            </span>
+            <span className={`ml-1.5 whitespace-nowrap ${state === "active" ? "text-ink" : "text-faint"}`}>{st}</span>
+            {i < STEPS.length - 1 && <span className="h-px w-5 bg-border mx-2.5" aria-hidden />}
+          </li>
         );
       })}
-    </div>
+    </ol>
   );
 }
 
@@ -85,98 +84,139 @@ function NewForm() {
     }
   }
 
+  const Field = ({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) => (
+    <label className="block">
+      <span className="label mb-1 block">{label}</span>
+      {children}
+      {hint && <span className="block text-[10.5px] text-faint mt-1">{hint}</span>}
+    </label>
+  );
+
   return (
-    <div>
-      <div className="font-display font-extrabold text-3xl">New Project</div>
-      <div className="text-muted font-medium">Configure a CRISPR design run, review the summary, then run the pipeline.</div>
-      <Dna width={1000} height={64} turns={6} />
-      <Stepper active={1} />
+    <div className="flex flex-col gap-4">
+      <PageHeader
+        eyebrow="design"
+        title="New analysis"
+        description="Paste a target sequence, choose the nuclease and experimental context, then run the pipeline. One run creates one project."
+        primary={
+          canRun
+            ? <Button onClick={run} disabled={busy || seqLen < 25}>{busy ? "Running analysis…" : "Run analysis"}</Button>
+            : <Button onClick={() => router.push("/buy")}>Add credits to run</Button>
+        }
+        actions={<span className="text-[11px] text-faint">5 credits · balance {credits}</span>}
+      >
+        <Stepper active={1} />
+      </PageHeader>
 
-      <div className="grid grid-cols-[2.3fr_1fr] gap-5 mt-2">
+      <div className="grid grid-cols-1 lg:grid-cols-[2.2fr_1fr] gap-4 items-start">
         <div className="flex flex-col gap-4">
-          <Card>
-            <CardTitle>🧬 Sequence Input</CardTitle>
-            <textarea className="input font-mono text-sm h-36" value={seq} onChange={(e) => setSeq(e.target.value)} />
-            <div className="mt-3"><div className="label mb-1">Project / gene name</div>
-              <input className="input" value={gene} onChange={(e) => setGene(e.target.value)} /></div>
-          </Card>
+          <Panel title="1 · target sequence" meta={`${seqLen} bp`}>
+            <textarea
+              className="input seqtext text-[12px] h-36"
+              value={seq}
+              onChange={(e) => setSeq(e.target.value)}
+              aria-label="Target DNA sequence"
+              spellCheck={false}
+            />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+              <Field label="Project / gene name" hint="Used as the project title.">
+                <input className="input" value={gene} onChange={(e) => setGene(e.target.value)} />
+              </Field>
+              <div className="text-[10.5px] text-faint self-end pb-1">
+                DNA only (A/C/G/T/N) · at least ~25 bp so PAMs have room · FASTA headers are ignored.
+              </div>
+            </div>
+          </Panel>
 
-          <Card>
-            <CardTitle>⚙️ CRISPR System</CardTitle>
+          <Panel title="2 · crispr system">
             <Row>
-              <div><div className="label mb-1">Cas enzyme</div>
+              <Field label="Cas enzyme">
                 <select className="input" value={cas} onChange={(e) => setCas(e.target.value)}>
-                  {enzymes.map((x) => <option key={x}>{x}</option>)}</select></div>
-              <div><div className="label mb-1">Organism</div>
+                  {enzymes.map((x) => <option key={x}>{x}</option>)}</select>
+              </Field>
+              <Field label="Organism">
                 <select className="input" value={organism} onChange={(e) => setOrganism(e.target.value)}>
-                  {["human", "mouse", "zebrafish", "yeast", "e_coli"].map((x) => <option key={x}>{x}</option>)}</select></div>
+                  {["human", "mouse", "zebrafish", "yeast", "e_coli"].map((x) => <option key={x}>{x}</option>)}</select>
+              </Field>
             </Row>
-          </Card>
+          </Panel>
 
-          <Card>
-            <CardTitle>🧪 Experimental Context</CardTitle>
+          <Panel title="3 · experimental context">
             <Row>
-              <div><div className="label mb-1">Desired outcome</div>
+              <Field label="Desired outcome">
                 <select className="input" value={outcome} onChange={(e) => setOutcome(e.target.value)}>
-                  {["knockout", "precise_edit", "base_edit", "prime_edit", "crispri", "crispra", "screen", "gene_disruption", "exon_targeting", "deletion", "custom"].map((x) => <option key={x}>{x}</option>)}</select></div>
-              <div><div className="label mb-1">Cell type (optional)</div>
+                  {["knockout", "precise_edit", "base_edit", "prime_edit", "crispri", "crispra", "screen", "gene_disruption", "exon_targeting", "deletion", "custom"].map((x) => <option key={x}>{x}</option>)}</select>
+              </Field>
+              <Field label="Cell type (optional)">
                 <select className="input" value={cell} onChange={(e) => setCell(e.target.value)}>
-                  {["", "stem_cell", "neuron", "hek293", "primary_t", "cancer_line"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}</select></div>
+                  {["", "stem_cell", "neuron", "hek293", "primary_t", "cancer_line"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}</select>
+              </Field>
             </Row>
             <div className="mt-3"><Row>
-              <div><div className="label mb-1">Delivery (optional)</div>
+              <Field label="Delivery (optional)">
                 <select className="input" value={delivery} onChange={(e) => setDelivery(e.target.value)}>
-                  {["", "rnp", "plasmid", "lentivirus", "aav", "electroporation"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}</select></div>
-              <div><div className="label mb-1">Temperature °C</div>
-                <input className="input" type="number" value={temp} onChange={(e) => setTemp(parseFloat(e.target.value))} /></div>
+                  {["", "rnp", "plasmid", "lentivirus", "aav", "electroporation"].map((x) => <option key={x} value={x}>{x || "—"}</option>)}</select>
+              </Field>
+              <Field label="Temperature °C">
+                <input className="input" type="number" value={temp} onChange={(e) => setTemp(parseFloat(e.target.value))} />
+              </Field>
             </Row></div>
-          </Card>
+          </Panel>
 
-          <Card>
-            <CardTitle>🎯 Optimization Settings</CardTitle>
-            <div className="label mb-1">Optimized set size (N): {setSize}</div>
-            <input type="range" min={1} max={6} value={setSize} onChange={(e) => setSetSize(parseInt(e.target.value))} className="w-full accent-brand" />
-            <div className="grid grid-cols-2 gap-3 mt-3">
-              <div><div className="label mb-1">Risk tolerance</div>
+          <Panel title="4 · optimisation">
+            <Field label={`Optimised set size (N): ${setSize}`}>
+              <input type="range" min={1} max={6} value={setSize} onChange={(e) => setSetSize(parseInt(e.target.value))} className="w-full accent-brand" />
+            </Field>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+              <Field label="Risk tolerance">
                 <select className="input" value={risk} onChange={(e) => setRisk(e.target.value)}>
-                  {["low", "balanced", "high"].map((x) => <option key={x}>{x}</option>)}</select></div>
-              <div><div className="label mb-1">Optimizer</div>
+                  {["low", "balanced", "high"].map((x) => <option key={x}>{x}</option>)}</select>
+              </Field>
+              <Field label="Optimizer">
                 <select className="input" value={optMode} onChange={(e) => setOptMode(e.target.value)}>
                   <option value="classical">Classical (annealing)</option>
                   <option value="quantum_inspired">Quantum-inspired (QUBO)</option>
                   <option value="quantum_hardware">Quantum hardware (experimental)</option>
-                </select></div>
+                </select>
+              </Field>
             </div>
-            <div className="text-xs text-muted mt-2">Quantum-inspired optimization searches guide
-              combinations. Biological scoring stays classical bioinformatics/ML — quantum does
-              not change prediction accuracy.</div>
-          </Card>
+            <div className="caveat mt-3 -mx-3 -mb-3">
+              Quantum-inspired optimisation searches guide <em>combinations</em>. Biological scoring stays
+              classical — the optimizer does not change prediction accuracy.
+            </div>
+          </Panel>
         </div>
 
-        <div className="flex flex-col gap-4">
-          <Card>
-            <CardTitle>📋 Project Summary</CardTitle>
+        <div className="flex flex-col gap-4 lg:sticky lg:top-0">
+          <Panel title="run summary">
             {[["Project", gene || "—"], ["Sequence length", `${seqLen} bp`], ["Cas enzyme", cas],
-              ["Organism", organism], ["Desired outcome", outcome], ["Guide set size", String(setSize)]].map(([k, v]) => (
-              <div key={k} className="flex justify-between py-1.5 border-b border-dashed border-border text-sm last:border-0">
-                <span className="text-muted font-semibold">{k}</span><span className="font-bold">{v}</span></div>
+              ["Organism", organism], ["Desired outcome", outcome], ["Guide set size", String(setSize)],
+              ["Optimizer", optMode.replace("_", " ")]].map(([k, v]) => (
+              <div key={k} className="flex justify-between gap-3 py-1.5 border-b border-divider text-[11.5px] last:border-0">
+                <span className="text-faint">{k}</span><span className="text-ink text-right truncate">{v}</span></div>
             ))}
-          </Card>
-          <Card>
-            <div className="text-sm text-muted">💎 This run costs <b className="text-ink">5 credits</b> · balance <b className="text-ink">{credits}</b></div>
-            {err && <div className="text-bad text-sm font-semibold mt-2">{err}</div>}
-            <div className="mt-3">
+            <div className="mt-3 pt-3 border-t border-border">
+              <div className="text-[11px] text-muted mb-2">
+                This run costs <b className="text-ink font-medium">5 credits</b> · balance <b className={`font-medium ${canRun ? "text-ink" : "text-bad"}`}>{credits}</b>
+              </div>
+              {err && <div role="alert" className="border border-bad/40 bg-bad/[0.06] text-bad text-[11.5px] px-2.5 py-2 mb-2">{err}</div>}
               {canRun ? (
-                <Button onClick={run} disabled={busy} full>{busy ? "Running…" : "🚀 Run Optimization"}</Button>
+                <Button onClick={run} disabled={busy || seqLen < 25} full>{busy ? "Running analysis…" : "Run analysis"}</Button>
               ) : (
-                <Button onClick={() => router.push("/buy")} full>💳 Buy Credits</Button>
+                <Button onClick={() => router.push("/buy")} full>Add credits to run</Button>
               )}
+              {seqLen < 25 && <div className="text-[10.5px] text-warn mt-1.5">Sequence is too short — paste at least ~25 bp.</div>}
             </div>
-          </Card>
-          <Card>
-            <CardTitle>Input requirements</CardTitle>
-            <div className="text-sm text-muted">• DNA only (A/C/G/T/N)<br />• ≥ ~25 bp so PAMs have room<br />• FASTA headers ignored<br />• Pick a Cas enzyme + outcome</div>
-          </Card>
+          </Panel>
+          <Panel title="what you get">
+            <ul className="text-[11px] text-muted leading-relaxed list-none flex flex-col gap-1">
+              <li>› Ranked candidate guides with on-target, off-target and outcome scores</li>
+              <li>› An optimised guide <em>set</em> for your set size and risk tolerance</li>
+              <li>› Plain-language explanations of why each guide ranks where it does</li>
+              <li>› CSV / JSON export from the project page</li>
+            </ul>
+            <div className="caveat mt-3 -mx-3 -mb-3">Scores are computational estimates for research use — validate experimentally.</div>
+          </Panel>
         </div>
       </div>
     </div>

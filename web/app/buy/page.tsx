@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { Shell } from "@/components/Shell";
 import { Card, Button } from "@/components/ui";
+import { PageHeader, ErrorState } from "@/components/PageHeader";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
@@ -35,27 +36,29 @@ function BuyView() {
 
   return (
     <div>
-      <div className="font-display font-extrabold text-3xl">Buy Credits</div>
-      <div className="text-muted font-medium">
-        Current balance: <b className="text-ink">💎 {account?.credits ?? 0} credits</b> · each design run costs {perRun} credits.
-      </div>
-      {msg && <div className="mt-3 text-good font-semibold">{msg}</div>}
+      <PageHeader
+        eyebrow="billing"
+        title="Credits"
+        description={`Each design run costs ${perRun} credits. Purchases are added to your balance immediately.`}
+        actions={<span className="text-[11px] text-faint">balance <b className="text-ink font-medium">{account?.credits ?? 0}</b></span>}
+      />
+      {msg && (msg.startsWith("✓") ? <div className="mt-3 text-[11.5px] text-brand">{msg}</div> : <div className="mt-3"><ErrorState message={msg} /></div>)}
 
-      <div className="grid grid-cols-3 gap-5 mt-5">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
         {packages.map((pkg) => (
-          <Card key={pkg.name} className={`text-center ${pkg.popular ? "ring-2 ring-brand" : ""}`}>
-            {pkg.popular && <div className="inline-block bg-brand text-white text-[10px] font-extrabold uppercase tracking-wide rounded-full px-2 py-0.5 mb-2">Most popular</div>}
-            <div className="font-display font-extrabold text-lg">{pkg.name}</div>
-            <div className="font-display font-extrabold text-4xl text-brand mt-1">{pkg.credits}</div>
-            <div className="text-muted text-sm">credits</div>
-            <div className="text-lg font-bold text-muted mt-2">${pkg.price}</div>
-            <div className="text-sm text-muted mb-3">{pkg.sub}</div>
+          <Card key={pkg.name} className={`text-center ${pkg.popular ? "!border-brand" : ""}`}>
+            {pkg.popular && <div className="inline-block tag-good mb-2">most popular</div>}
+            <div className="text-[13px] text-title font-medium">{pkg.name}</div>
+            <div className="text-[32px] leading-none tracking-tightest tabular-nums text-brand mt-2">{pkg.credits}</div>
+            <div className="label mt-1">credits</div>
+            <div className="text-[16px] text-ink mt-3 tabular-nums">${pkg.price}</div>
+            <div className="text-[11px] text-muted mb-3">{pkg.sub}</div>
             <Button onClick={() => buy(pkg)} disabled={busy} variant={pkg.popular ? "primary" : "ghost"} full>Buy {pkg.name}</Button>
           </Card>
         ))}
       </div>
-      <div className="mt-5 rounded-xl border border-brand/20 bg-brand/5 text-[#4a2a63] text-sm p-3">
-        💳 Demo checkout — no real payment is processed. Structured to drop into Stripe later.
+      <div className="mt-4 caveat border border-warn/30">
+        Simulated checkout — no payment is processed and no card is collected. A payment provider has not been connected yet.
       </div>
     </div>
   );

@@ -39,11 +39,18 @@ Decisions so far
 - [x] Admin never sees project contents (server-side; test asserts no sequences leak)
 - [ ] "Shared with me" section on the user dashboard — lands with Phase 5
 
-## Phase 3 — Collapsible sidebar + information hierarchy  `[ ]`
-- [ ] Labelled collapsible sidebar, persisted preference, tooltips when collapsed
-- [ ] Admin Dashboard entry only for admins (also enforced server-side)
-- [ ] Responsive behaviour (laptop / desktop / tablet)
-- [ ] Primary-action hierarchy on New Analysis, project pages, dashboard
+## Phase 3 — Collapsible sidebar + information hierarchy  `[x]`
+- [x] `lib/nav.ts` single nav definition; `components/Sidebar.tsx` expanded (logo + labels) / collapsed (icons + tooltips)
+- [x] Preference remembered (`localStorage: qg-sidebar`); auto-collapses < 1024 px until the user chooses
+- [x] < 768 px: sidebar becomes a drawer opened from the command bar (Esc / backdrop closes)
+- [x] Admin Dashboard entry only for admins (server enforces regardless)
+- [x] Project explorer moved to a full `/projects` page (folders, filter, archive, move/rename/delete)
+- [x] Project header: back link, larger title, facts strip, primary **Export results ▾** (CSV / JSON via `lib/exports.ts`)
+- [x] New Analysis: numbered panels, sticky run summary, primary **Run analysis** in header + summary, short-sequence guard
+- [x] Account / Billing pages on `PageHeader`; simulated-checkout notice made explicit
+- [x] Status bar now reports real API reachability; hardcoded "postgres" / "GRCh38" labels removed
+- [x] Footer legal links inside the app shell
+- [ ] Collaborations / Research Tools nav entries — added when their pages land (Phases 5, 6)
 
 ## Phase 4 — First-time onboarding  `[ ]`
 - [ ] `onboarding_completed` / `onboarding_step` on user; API to read/update
