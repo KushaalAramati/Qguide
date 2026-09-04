@@ -8,7 +8,7 @@ echo Installing backend dependencies (first run may take a minute)...
 REM ---- local development settings (never use these values in production) ----
 set "ENVIRONMENT=dev"
 set "JWT_SECRET=local-demo-secret-not-for-production-use-1234"
-set "ADMIN_EMAILS=hnreddy@biovaram.com"
+set "ADMIN_EMAILS=hnreddy@biovaram.com,aramatikushaalreddy@gmail.com,aramati@wisc.edu"
 set "QGUIDE_DEV_EMAIL=1"
 set "EMAIL_BACKEND=console"
 set "APP_BASE_URL=http://localhost:3000"
