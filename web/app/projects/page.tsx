@@ -7,7 +7,7 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Panel } from "@/components/ui";
 import { PageHeader, EmptyState, LoadingRows, ErrorState } from "@/components/PageHeader";
-import { api } from "@/lib/api";
+import { api, ProjectMeta, projectHref } from "@/lib/api";
 
 export default function ProjectsPage() {
   return <Shell><ProjectsView /></Shell>;
@@ -16,7 +16,7 @@ export default function ProjectsPage() {
 type Folder = { id: string; name: string; parent_id: string | null };
 
 function ProjectsView() {
-  const [projects, setProjects] = useState<any[] | null>(null);
+  const [projects, setProjects] = useState<ProjectMeta[] | null>(null);
   const [folders, setFolders] = useState<Folder[]>([]);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
@@ -38,7 +38,8 @@ function ProjectsView() {
   const depth = (fid: string | null) => { let d = 0, c = fid; while (c && byId[c]) { d++; c = byId[c].parent_id; if (d > 8) break; } return d; };
   const folderPath = (fid: string | null) => { const parts: string[] = []; let c = fid; while (c && byId[c]) { parts.unshift(byId[c].name); c = byId[c].parent_id; if (parts.length > 8) break; } return parts.join(" / "); };
 
-  const all = projects || [];
+  const all = (projects || []).filter((p) => !p.shared);
+  const nShared = (projects || []).filter((p) => p.shared).length;
   const match = (p: any) => `${p.name} ${p.id} ${p.best_guide || ""}`.toLowerCase().includes(q.trim().toLowerCase());
   const shown = all
     .filter((p) => (showArch ? p.archived : !p.archived))
@@ -98,6 +99,14 @@ function ProjectsView() {
           {folders.length > 0 && <div className="border-t border-divider my-1" />}
           {folders.map((f) => <FolderRow key={f.id} f={f} />)}
           {folders.length === 0 && <div className="px-2 py-1.5 text-[10.5px] text-faint">No folders yet — use “New folder” to organise projects.</div>}
+          {nShared > 0 && (
+            <>
+              <div className="border-t border-divider my-1" />
+              <Link href="/collaborations" className="w-full flex items-center px-2 py-1 text-[11.5px] text-muted hover:text-ink">
+                shared with me <span className="ml-auto text-[10px] text-faint tabular-nums">{nShared}</span>
+              </Link>
+            </>
+          )}
           {nArchived > 0 && (
             <>
               <div className="border-t border-divider my-1" />
@@ -133,8 +142,9 @@ function ProjectsView() {
                 {shown.map((p) => (
                   <tr key={p.id} className={p.archived ? "opacity-60" : ""}>
                     <td>
-                      <Link href={`/project/${p.id}`} className="text-brand hover:underline">{p.name}</Link>
+                      <Link href={projectHref(p)} className="text-brand hover:underline">{p.name}</Link>
                       <span className="ml-2 text-faint text-[10.5px] tabular-nums">{p.id}</span>
+                      {(p.n_collaborators || 0) > 0 && <span className="ml-2 text-[10px] text-faint" title="collaborators">◎ {p.n_collaborators}</span>}
                     </td>
                     <td className="tabular-nums">{p.n_guides ?? "—"}</td>
                     <td className="seqtext text-[11px]">{p.best_guide || "—"}</td>
@@ -145,7 +155,7 @@ function ProjectsView() {
                               className="text-faint hover:text-ink px-1 text-[14px] leading-none">⋯</button>
                       {menu === p.id && (
                         <div className="absolute right-0 z-20 mt-0.5 w-48 bg-surface border border-border p-1 text-[11px] text-left" onMouseLeave={() => setMenu(null)}>
-                          <Link href={`/project/${p.id}`} className="block px-2 py-1 text-ink hover:bg-brand/[0.08] hover:text-brand">open</Link>
+                          <Link href={projectHref(p)} className="block px-2 py-1 text-ink hover:bg-brand/[0.08] hover:text-brand">open</Link>
                           <div className="px-2 py-1 label">move to</div>
                           <button onClick={() => act(() => api.patchProject(p.id, { folder_id: null }))} className="w-full text-left px-2 py-1 text-muted hover:bg-brand/[0.08] hover:text-brand">unfiled</button>
                           {folders.map((f) => (

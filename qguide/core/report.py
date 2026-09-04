@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
+from qguide.app.branding import BRANDING
 from qguide.app.schemas import DesignResponse
 from qguide.core.explainability import assumptions
 
@@ -93,7 +94,7 @@ def build_report(resp: DesignResponse, top_n: int = 10) -> Dict[str, object]:
                                  "trained-model / genome-backed implementations.")
 
     return {
-        "title": f"QGuide design report — {req.gene_name or 'untitled'}",
+        "title": f"{BRANDING.app_name} design report — {req.gene_name or 'untitled'}",
         "generated_note": "Computational, model-based predictions. Not clinical guidance.",
         "summary": resp.summary,
         "inputs": inputs,

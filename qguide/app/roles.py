@@ -28,19 +28,23 @@ ASSIGNABLE_ROLES = ROLES
 # --------------------------------------------------------------------------- #
 P_RUN_DESIGN = "run_design"
 P_CREATE_PROJECT = "create_project"
-P_RESEARCH_TOOLS = "research_tools"
+P_RESEARCH_TOOLS = "research_tools"      # templates, metadata, comparison, reports
+P_BATCH_ANALYSIS = "batch_analysis"      # multi-target batch runs (heavier)
 P_MANAGE_ORG = "manage_org"
 P_ADMIN_CONSOLE = "admin_console"
 P_MANAGE_USERS = "manage_users"
 P_MANAGE_ROLES = "manage_roles"
 
-_BASE: Set[str] = {P_RUN_DESIGN, P_CREATE_PROJECT}
+_BASE: Set[str] = {P_RUN_DESIGN, P_CREATE_PROJECT, P_RESEARCH_TOOLS}
 
+# Every account can use the research tools section; the RESEARCHER role (and
+# above) additionally unlocks batch multi-target analysis. Plan-based gating can
+# be layered on later without changing call sites (see routes.require_permission).
 PERMISSIONS = {
     USER: set(_BASE),
-    RESEARCHER: _BASE | {P_RESEARCH_TOOLS},
-    ORGANIZATION_ADMIN: _BASE | {P_RESEARCH_TOOLS, P_MANAGE_ORG},
-    ADMIN: _BASE | {P_RESEARCH_TOOLS, P_MANAGE_ORG, P_ADMIN_CONSOLE,
+    RESEARCHER: _BASE | {P_BATCH_ANALYSIS},
+    ORGANIZATION_ADMIN: _BASE | {P_BATCH_ANALYSIS, P_MANAGE_ORG},
+    ADMIN: _BASE | {P_BATCH_ANALYSIS, P_MANAGE_ORG, P_ADMIN_CONSOLE,
                     P_MANAGE_USERS, P_MANAGE_ROLES},
 }
 

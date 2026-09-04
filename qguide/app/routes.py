@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
-from qguide.app import auth, billing, emailer, ratelimit, store
+from qguide.app import access, auth, billing, emailer, ratelimit, store
 from qguide.app import roles as roles_mod
 from qguide.app.branding import BRANDING
 from qguide.app.legal import LEGAL_DOCUMENTS, TERMS_VERSION
@@ -308,8 +308,11 @@ def _client_key(request: Optional[Request], email: str) -> str:
     return f"{ip}|{(email or '').strip().lower()}"
 
 
-LOGIN_LIMIT = int(os.environ.get("LOGIN_RATE_LIMIT", "10"))
-LOGIN_WINDOW = int(os.environ.get("LOGIN_RATE_WINDOW", "300"))
+def _login_limits() -> tuple:
+    """Attempts allowed per (ip, email) window. Read per call so tests and
+    operators can change it without re-importing the module."""
+    return (int(os.environ.get("LOGIN_RATE_LIMIT", "10")),
+            int(os.environ.get("LOGIN_RATE_WINDOW", "300")))
 
 
 @router.post("/auth/signup")
@@ -320,7 +323,8 @@ def signup(body: SignupBody, request: Request = None) -> Dict[str, object]:
             detail="You must accept the Terms of Service and Privacy Policy to "
                    "create an account.")
     allowed, retry = ratelimit.check(f"signup:{_client_key(request, body.email)}",
-                                     limit=5, window_seconds=600)
+                                     limit=int(os.environ.get("SIGNUP_RATE_LIMIT", "5")),
+                                     window_seconds=600)
     if not allowed:
         raise HTTPException(status_code=429,
                             detail=f"Too many sign-up attempts. Try again in {retry}s.")
@@ -344,7 +348,8 @@ def signup(body: SignupBody, request: Request = None) -> Dict[str, object]:
 @router.post("/auth/login")
 def login(body: LoginBody, request: Request = None) -> Dict[str, object]:
     key = f"login:{_client_key(request, body.email)}"
-    allowed, retry = ratelimit.check(key, limit=LOGIN_LIMIT, window_seconds=LOGIN_WINDOW)
+    limit, window = _login_limits()
+    allowed, retry = ratelimit.check(key, limit=limit, window_seconds=window)
     if not allowed:
         raise HTTPException(status_code=429,
                             detail=f"Too many sign-in attempts. Try again in {retry}s.")
@@ -380,6 +385,9 @@ def change_password(body: ChangePwBody, email: str = Depends(current_email)) -> 
         if reason == "bad_password":
             raise HTTPException(status_code=401, detail="Current password is incorrect.")
         raise HTTPException(status_code=400, detail=reason)
+    store.add_notification(email, "security", "Your password was changed",
+                           "If this was not you, reset your password immediately and contact "
+                           f"{BRANDING.support_email}.", "/account?section=Security")
     return {"ok": True}
 
 
@@ -436,6 +444,8 @@ def reset_password(body: ResetBody) -> Dict[str, object]:
     ok, reason = store.reset_password(email, body.new_password)
     if not ok:
         raise HTTPException(status_code=400, detail=reason)
+    store.add_notification(email, "security", "Your password was reset",
+                           "A password reset link was used on your account.", "/account?section=Security")
     return {"ok": True, "token": auth.make_token(email), "account": _account(email)}
 
 
@@ -482,6 +492,64 @@ def update_onboarding(body: OnboardingBody,
 
 
 # --------------------------------------------------------------------------- #
+# Notifications                                                               #
+# --------------------------------------------------------------------------- #
+@router.get("/notifications")
+def notifications(limit: int = 30, unread_only: bool = False,
+                  email: str = Depends(current_email)) -> Dict[str, object]:
+    return {"items": store.list_notifications(email, limit, unread_only),
+            "unread": store.unread_count(email)}
+
+
+@router.get("/notifications/unread-count")
+def notifications_unread(email: str = Depends(current_email)) -> Dict[str, int]:
+    return {"unread": store.unread_count(email)}
+
+
+@router.post("/notifications/{nid}/read")
+def notification_read(nid: int, email: str = Depends(current_email)) -> Dict[str, object]:
+    if not store.mark_read(email, nid, True):
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"ok": True, "unread": store.unread_count(email)}
+
+
+@router.post("/notifications/{nid}/unread")
+def notification_unread(nid: int, email: str = Depends(current_email)) -> Dict[str, object]:
+    if not store.mark_read(email, nid, False):
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"ok": True, "unread": store.unread_count(email)}
+
+
+@router.post("/notifications/read-all")
+def notifications_read_all(email: str = Depends(current_email)) -> Dict[str, object]:
+    return {"ok": True, "marked": store.mark_all_read(email), "unread": 0}
+
+
+@router.delete("/notifications/{nid}")
+def notification_delete(nid: int, email: str = Depends(current_email)) -> Dict[str, object]:
+    if not store.delete_notification(email, nid):
+        raise HTTPException(status_code=404, detail="Notification not found.")
+    return {"ok": True, "unread": store.unread_count(email)}
+
+
+@router.get("/account/notification-preferences")
+def get_notification_prefs(email: str = Depends(current_email)) -> Dict[str, object]:
+    return {"preferences": store.get_notification_prefs(email),
+            "categories": store.NOTIFICATION_CATEGORIES}
+
+
+class NotificationPrefsBody(BaseModel):
+    preferences: Dict[str, bool]
+
+
+@router.patch("/account/notification-preferences")
+def set_notification_prefs(body: NotificationPrefsBody,
+                           email: str = Depends(current_email)) -> Dict[str, object]:
+    return {"preferences": store.set_notification_prefs(email, body.preferences),
+            "categories": store.NOTIFICATION_CATEGORIES}
+
+
+# --------------------------------------------------------------------------- #
 # Billing / credits                                                           #
 # --------------------------------------------------------------------------- #
 @router.get("/billing/packages")
@@ -502,6 +570,9 @@ def buy(body: BuyBody, email: str = Depends(current_email)) -> Dict[str, object]
     if body.credits <= 0:
         raise HTTPException(status_code=400, detail="Credits must be positive.")
     store.buy_credits(email, body.credits, body.price, body.label)
+    store.add_notification(email, "billing", f"{body.credits} credits added",
+                           f"{body.label} — your balance is now "
+                           f"{store.get_user(email)['credits']} credits.", "/account?section=Billing")
     return _account(email)
 
 
@@ -567,6 +638,9 @@ def admin_set_credits(body: SetCreditsBody, admin: str = Depends(current_admin))
     u = store.set_credits(body.email, body.credits, admin)
     if u is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    store.add_notification(body.email.strip().lower(), "billing",
+                           f"Your credit balance was set to {body.credits}",
+                           "Adjusted by an administrator.", "/account?section=Billing")
     return u
 
 
@@ -599,6 +673,8 @@ def admin_set_role(body: SetRoleBody,
     u = store.set_role(target, role, admin)
     if u is None:
         raise HTTPException(status_code=404, detail="User not found.")
+    store.add_notification(target, "account", f"Your role is now {role.lower().replace('_', ' ')}",
+                           "Changed by an administrator.", "/account")
     return u
 
 
@@ -622,46 +698,234 @@ def admin_set_status(body: SetStatusBody,
 
 
 # --------------------------------------------------------------------------- #
-# Projects                                                                     #
+# Projects (authorised through qguide.app.access on every route)              #
 # --------------------------------------------------------------------------- #
 @router.get("/projects")
 def list_projects(email: str = Depends(current_email)) -> List[Dict[str, object]]:
-    return store.list_projects_meta(email)
+    """Own projects (role OWNER, with collaborator counts) followed by projects
+    shared with the caller (role EDITOR/VIEWER)."""
+    counts = store.member_counts(email)
+    own = store.list_projects_meta(email)
+    for p in own:
+        p["role"] = access.OWNER
+        p["shared"] = False
+        p["n_collaborators"] = counts.get(p.get("uid"), 0)
+    return own + store.list_shared_projects(email)
 
 
 @router.get("/projects/{pid}")
 def get_project(pid: str, email: str = Depends(current_email)) -> Dict[str, object]:
-    proj = store.get_project(email, pid)
+    meta, role = access.require_project(email, pid, access.VIEWER)
+    proj = store.get_project_by_uid(meta["uid"]) if meta.get("uid") else store.get_project(email, pid)
     if proj is None:
         raise HTTPException(status_code=404, detail="Project not found.")
-    return {"id": proj["id"], "name": proj["name"], "created": proj["created"],
+    return {"id": proj["id"], "uid": proj["uid"], "name": proj["name"], "created": proj["created"],
             "elapsed": proj["elapsed"], "selected_guide": proj["selected_guide"],
+            "owner_email": proj["owner_email"],
+            "access": access.access_payload(role, proj),
+            "members": store.list_members(proj["uid"]) if proj.get("uid") else [],
             "response": proj["response"]}
 
 
 @router.delete("/projects/{pid}")
 def remove_project(pid: str, email: str = Depends(current_email)) -> Dict[str, bool]:
-    return {"deleted": store.delete_project(email, pid)}
+    meta, _ = access.require_project(email, pid, access.OWNER)
+    members = [m for m in store.list_members(meta["uid"]) if m["role"] != access.OWNER]
+    ok = store.delete_project_uid(meta["uid"])
+    for m in members:
+        store.add_notification(m["email"], "project_deleted",
+                               f"\"{meta['name']}\" was deleted",
+                               f"{email} deleted a project you had access to.")
+    return {"deleted": ok}
 
 
 class ProjectPatch(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, max_length=255)
     folder_id: Optional[str] = None
     archived: Optional[bool] = None
+    selected_guide: Optional[str] = Field(default=None, max_length=64)
 
 
 @router.patch("/projects/{pid}")
 def patch_project(pid: str, body: ProjectPatch, email: str = Depends(current_email)) -> Dict[str, bool]:
+    """Rename / select guide: EDITOR+. Folder + archive are the owner's personal
+    organisation of their library: OWNER only."""
+    meta, role = access.require_project(email, pid, access.VIEWER)
     done = False
-    if body.name is not None:
-        done = store.rename_project(email, pid, body.name) or done
-    if body.folder_id is not None or (body.folder_id is None and "folder_id" in body.model_fields_set):
-        done = store.move_project(email, pid, body.folder_id) or done
-    if body.archived is not None:
-        done = store.set_archived(email, pid, body.archived) or done
+    wants_edit = body.name is not None or body.selected_guide is not None
+    wants_organize = (body.archived is not None or body.folder_id is not None
+                      or "folder_id" in body.model_fields_set)
+    if wants_edit:
+        access.require_project(email, pid, access.EDITOR)
+        if body.name is not None and body.name.strip():
+            done = store.rename_project_uid(meta["uid"], body.name) or done
+            _notify_members(meta, email, "project_renamed",
+                            f"\"{meta['name']}\" was renamed to \"{body.name.strip()}\"")
+        if body.selected_guide is not None:
+            done = store.set_selected_guide(meta["uid"], body.selected_guide) or done
+    if wants_organize:
+        access.require_project(email, pid, access.OWNER)
+        if body.folder_id is not None or "folder_id" in body.model_fields_set:
+            done = store.move_project(email, meta["id"], body.folder_id) or done
+        if body.archived is not None:
+            done = store.set_archived(email, meta["id"], body.archived) or done
     if not done:
-        raise HTTPException(status_code=404, detail="Project not found.")
+        raise HTTPException(status_code=400, detail="Nothing to update.")
     return {"ok": True}
+
+
+def _notify_members(meta: Dict, actor: str, ntype: str, title: str, message: str = "") -> None:
+    """Fan a project event out to every member except the actor."""
+    uid = meta.get("uid")
+    if not uid:
+        return
+    link = f"/project/{uid}"
+    for m in store.list_members(uid):
+        if m["email"] != actor:
+            store.add_notification(m["email"], ntype, title,
+                                   message or f"by {actor}", link)
+
+
+class RerunBody(BaseModel):
+    """Optional overrides applied on top of the project's stored request."""
+    overrides: Optional[Dict[str, object]] = None
+
+
+@router.post("/projects/{pid}/rerun")
+def rerun_project(pid: str, body: RerunBody, email: str = Depends(current_email)) -> Dict[str, object]:
+    """Re-run the pipeline for an existing project and store the result IN PLACE
+    (EDITOR+). Credits are charged to the person running it, not the owner."""
+    meta, role = access.require_project(email, pid, access.EDITOR)
+    proj = store.get_project_by_uid(meta["uid"])
+    if proj is None:
+        raise HTTPException(status_code=404, detail="Project not found.")
+    req = proj["request"]
+    if body.overrides:
+        allowed = {k: v for k, v in body.overrides.items() if k in DesignRequest.model_fields}
+        req = req.model_copy(update=allowed)
+    user = store.get_user(email)
+    if user["credits"] < billing.CREDITS_PER_RUN:
+        raise HTTPException(status_code=402, detail="Insufficient credits.")
+    t0 = time.perf_counter()
+    resp = pipeline.run_design(req)
+    elapsed = round(time.perf_counter() - t0, 3)
+    if not resp.guides:
+        raise HTTPException(status_code=400, detail="No guides found for this sequence / PAM.")
+    balance = store.charge_run(email, billing.CREDITS_PER_RUN,
+                               f"Re-run: {meta['name']}")
+    if balance is None:
+        raise HTTPException(status_code=402, detail="Insufficient credits.")
+    store.update_project_result(meta["uid"], resp, elapsed)
+    _notify_members(meta, email, "analysis_completed",
+                    f"\"{meta['name']}\" was re-analysed",
+                    f"{email} re-ran the analysis ({len(resp.guides)} guides).")
+    return {"ok": True, "uid": meta["uid"], "balance": balance, "elapsed": elapsed,
+            "n_guides": len(resp.guides)}
+
+
+# ---- collaborators ---------------------------------------------------------- #
+@router.get("/projects/{pid}/members")
+def project_members(pid: str, email: str = Depends(current_email)) -> Dict[str, object]:
+    meta, role = access.require_project(email, pid, access.VIEWER)
+    return {"uid": meta["uid"], "role": role, "members": store.list_members(meta["uid"]),
+            "roles": list(access.INVITABLE_ROLES)}
+
+
+class InviteBody(BaseModel):
+    email: EmailStr
+    role: str = access.VIEWER
+
+
+@router.post("/projects/{pid}/members")
+def invite_member(pid: str, body: InviteBody, email: str = Depends(current_email)) -> Dict[str, object]:
+    """Add a registered user as EDITOR or VIEWER (OWNER only). Re-inviting an
+    existing collaborator updates their role."""
+    meta, _ = access.require_project(email, pid, access.OWNER)
+    role = body.role.strip().upper()
+    if role not in access.INVITABLE_ROLES:
+        raise HTTPException(status_code=400, detail="Role must be EDITOR or VIEWER.")
+    target = body.email.strip().lower()
+    if target == email:
+        raise HTTPException(status_code=400, detail="You already own this project.")
+    who = store.lookup_user(target)
+    if who is None:
+        raise HTTPException(status_code=404,
+                            detail=f"No {BRANDING.app_name} account exists for {target}. "
+                                   "Ask them to sign up first, then invite them.")
+    res = store.upsert_member(meta["uid"], target, role, email)
+    link = f"/project/{meta['uid']}"
+    inviter = store.get_user(email)
+    inviter_name = inviter["name"] if inviter else email
+    if res["created"]:
+        store.add_notification(target, "project_invite",
+                               f"{inviter_name} shared \"{meta['name']}\" with you",
+                               f"You can now open this project as {role.lower()}.", link)
+        try:
+            emailer.send_collaboration_invite(target, inviter_name, meta["name"], role,
+                                              f"{emailer.app_base_url()}{link}")
+        except Exception:                                 # noqa: BLE001
+            pass
+    else:
+        store.add_notification(target, "project_role_changed",
+                               f"Your access to \"{meta['name']}\" is now {role.lower()}",
+                               f"Changed by {inviter_name}.", link)
+    return {"ok": True, "member": {"email": target, "name": who["name"], "role": role},
+            "members": store.list_members(meta["uid"])}
+
+
+class MemberRoleBody(BaseModel):
+    role: str
+
+
+@router.patch("/projects/{pid}/members/{member_email}")
+def change_member_role(pid: str, member_email: str, body: MemberRoleBody,
+                       email: str = Depends(current_email)) -> Dict[str, object]:
+    meta, _ = access.require_project(email, pid, access.OWNER)
+    role = body.role.strip().upper()
+    if role not in access.INVITABLE_ROLES:
+        raise HTTPException(status_code=400, detail="Role must be EDITOR or VIEWER.")
+    target = member_email.strip().lower()
+    if store.membership_role(meta["uid"], target) is None:
+        raise HTTPException(status_code=404, detail="That person is not a collaborator.")
+    store.upsert_member(meta["uid"], target, role, email)
+    store.add_notification(target, "project_role_changed",
+                           f"Your access to \"{meta['name']}\" is now {role.lower()}",
+                           f"Changed by {email}.", f"/project/{meta['uid']}")
+    return {"ok": True, "members": store.list_members(meta["uid"])}
+
+
+@router.delete("/projects/{pid}/members/{member_email}")
+def remove_member(pid: str, member_email: str,
+                  email: str = Depends(current_email)) -> Dict[str, object]:
+    """Owners remove anyone; a collaborator may remove themselves (leave)."""
+    target = member_email.strip().lower()
+    meta, role = access.require_project(email, pid, access.VIEWER)
+    if target != email and role != access.OWNER:
+        raise HTTPException(status_code=403, detail="Only the owner can remove collaborators.")
+    if target == meta["owner_email"]:
+        raise HTTPException(status_code=400, detail="The owner cannot be removed.")
+    if not store.remove_member(meta["uid"], target):
+        raise HTTPException(status_code=404, detail="That person is not a collaborator.")
+    if target != email:
+        store.add_notification(target, "project_access_removed",
+                               f"Your access to \"{meta['name']}\" was removed",
+                               f"Removed by {email}.")
+    else:
+        store.add_notification(meta["owner_email"], "collaborator_left",
+                               f"{email} left \"{meta['name']}\"", "", f"/project/{meta['uid']}")
+    return {"ok": True, "members": store.list_members(meta["uid"])}
+
+
+@router.get("/users/lookup")
+def lookup_user(email_q: str, request: Request = None,
+                email: str = Depends(current_email)) -> Dict[str, object]:
+    """Exact-match lookup used by the invite dialog. Authenticated and rate
+    limited; returns only name + institution."""
+    allowed, retry = ratelimit.check(f"lookup:{email}", limit=30, window_seconds=60)
+    if not allowed:
+        raise HTTPException(status_code=429, detail=f"Slow down — try again in {retry}s.")
+    who = store.lookup_user(email_q)
+    return {"found": who is not None, "user": who}
 
 
 @router.get("/folders")
@@ -726,9 +990,10 @@ def run(body: RunBody, email: str = Depends(current_email)) -> Dict[str, object]
 
     pid = store.next_pid(email)
     from datetime import datetime
-    proj = {"id": pid, "name": req.gene_name or "untitled",
+    import uuid as _uuid
+    proj = {"id": pid, "uid": _uuid.uuid4().hex, "name": req.gene_name or "untitled",
             "created": datetime.now().strftime("%Y-%m-%d %H:%M"), "elapsed": elapsed,
             "selected_guide": resp.best_single_guide_id, "request": req, "response": resp}
     store.save_project(email, proj)
-    return {"project_id": pid, "balance": balance, "elapsed": elapsed,
+    return {"project_id": pid, "uid": proj["uid"], "balance": balance, "elapsed": elapsed,
             "name": proj["name"], "created": proj["created"], "response": resp}

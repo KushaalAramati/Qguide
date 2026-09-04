@@ -37,7 +37,7 @@ Decisions so far
 - [x] User dashboard: header with primary CTA, metrics, recent projects, next steps, guide activity; loading/empty/error states
 - [x] Shared `PageHeader` / `Tabs` / `EmptyState` / `LoadingRows` / `ErrorState` primitives
 - [x] Admin never sees project contents (server-side; test asserts no sequences leak)
-- [ ] "Shared with me" section on the user dashboard — lands with Phase 5
+- [x] "Shared with me" section on the user dashboard (Phase 5)
 
 ## Phase 3 — Collapsible sidebar + information hierarchy  `[x]`
 - [x] `lib/nav.ts` single nav definition; `components/Sidebar.tsx` expanded (logo + labels) / collapsed (icons + tooltips)
@@ -50,7 +50,7 @@ Decisions so far
 - [x] Account / Billing pages on `PageHeader`; simulated-checkout notice made explicit
 - [x] Status bar now reports real API reachability; hardcoded "postgres" / "GRCh38" labels removed
 - [x] Footer legal links inside the app shell
-- [ ] Collaborations / Research Tools nav entries — added when their pages land (Phases 5, 6)
+- [x] Collaborations nav entry (Phase 5) · [x] Research Tools nav entry (Phase 6)
 
 ## Phase 4 — First-time onboarding  `[x]`
 - [x] Migration 0003: `onboarding_completed`, `onboarding_step`, `onboarding_completed_at`; `GET/PATCH /account/onboarding`; flag on `/me`
@@ -59,26 +59,46 @@ Decisions so far
 - [x] Replay tutorial from Settings › Onboarding (lists the steps)
 - [x] Test: first login shows it, finish persists, second login does not, replay resets
 
-## Phase 5 — Collaboration and permissions  `[ ]`
-- [ ] Global project id + owner; `project_memberships` (OWNER / EDITOR / VIEWER)
-- [ ] Invite by email (registered users), manage access, remove, change role
-- [ ] Every project route authorised server-side; guessed URLs return 404/403
-- [ ] Share / Manage access UI; collaborators list; Collaborations page
+## Phase 5 — Collaboration and permissions  `[x]`
+- [x] Migration 0004: global `projects.uid` (backfilled for existing rows) + `project_memberships` (project_uid, user_email, role, invited_by, created; unique index)
+- [x] Migration 0005: `notifications` table (API/UI in Phase 7) — invites, role changes, removals, re-runs, deletions already write to it
+- [x] `qguide/app/access.py`: OWNER / EDITOR / VIEWER, capability matrix, `require_project()` used by every project route
+- [x] Non-members get 404 on any project URL (existence not revealed); insufficient role gets 403
+- [x] `GET /projects` = own (with collaborator counts) + shared-with-me (with role, owner name)
+- [x] `GET/POST/PATCH/DELETE /projects/{id}/members`; invite requires a registered account; owners cannot be removed; collaborators can leave
+- [x] `GET /users/lookup` (auth + rate-limited exact match) for the invite dialog
+- [x] Editors: rename, save selected guide, `POST /projects/{id}/rerun` in place (charged to the runner). Owner-only: share, delete, folders/archive
+- [x] Invitation email via the pluggable sender
+- [x] UI: Share / Access dialog (live lookup, role select, change/remove/leave), role badge + read-only notice in project header, Save selection / Re-run actions
+- [x] `/collaborations` page + sidebar entry; "shared with me" on dashboard and projects page
+- [x] Tests: 11 new in `test_collaboration.py` (180 total) — editor access + modify, viewer denial, stranger 404, leave, delete cascade, legacy uid backfill
 
-## Phase 6 — Researcher tools  `[ ]`
-- [ ] Experiment metadata (organism, cell line, target gene, nuclease, type, notes, tags)
-- [ ] Batch / multi-target analysis, saved templates, comparison, history
-- [ ] CSV / JSON export with reproducibility metadata
+## Phase 6 — Researcher tools  `[x]`
+- [x] Migration 0006: experiment_name, cell_line, target_gene, experiment_type, notes, tags, citations (+ audit fields) on projects; `analysis_templates` table
+- [x] `qguide/app/research.py` router (scientific core untouched): metadata, tags, templates CRUD, batch, compare, history, report
+- [x] Project **Notes** tab: experiment metadata, notes, tags (autocomplete from your library), references (DOI/URL); editors write, viewers read
+- [x] Analysis templates (parameters only — never sequences), validated against `DesignRequest`
+- [x] Batch multi-target runs (FASTA or name↹sequence), one shared config or template, files results in a folder, tags them; credits checked up front, charged per run; ≤10 targets
+- [x] Batch is gated by the RESEARCHER role (`batch_analysis` permission) — non-researchers see why and who can grant it; every account keeps templates/compare/history/notes
+- [x] Compare 2–4 accessible projects: inputs, score stats, optimised sets, top guides, shared protospacers
+- [x] Experiment history (run ledger + projects)
+- [x] Reports: `GET /research/projects/{id}/report` (JSON or Markdown) from the stored result with metadata + reproducibility block; both in the Export menu
+- [x] `/research` page + sidebar entry; report title now branded
+- [x] Tests: 4 new in `test_research_tools.py` (184 total)
 
-## Phase 7 — Notifications, settings, legal  `[ ]`
-- [ ] `notifications` table + API (list, mark read, mark all read, deep link)
-- [ ] Working bell; events: invite, collaborator joined, project changed, security alert
-- [ ] Settings: Profile · Account · Security · Notifications · Appearance · Subscription · Tutorial
-- [ ] Footer legal links inside the app shell
+## Phase 7 — Notifications, settings, legal  `[x]`
+- [x] Notifications API: list (+unread-only), unread count, mark read / unread / all, delete; deep `link` on each item; per-user only
+- [x] Events wired: project invite, role changed, access removed, collaborator left, rename, notes updated, re-run completed, project deleted, password changed / reset, credits purchased or adjusted, role changed by admin
+- [x] Migration 0007 + per-category preferences (collaboration · project activity · account · billing) — muted categories are not written
+- [x] Working bell in the top bar: polled unread badge, panel with mark-read toggles, mark all, click-through to the linked project/settings
+- [x] Settings (`/account`, `/settings` alias, `?section=` deep links): Profile (name, institution, research area) · Account · Security (policy-checked password change) · Notifications · Appearance (theme + sidebar) · Subscription (plan, credits, billing/usage ledgers) · Onboarding
+- [x] Legal footer inside the app shell (Phase 3) and on auth/legal pages
+- [x] Tests: 4 new in `test_notifications.py` (188 total)
 
-## Phase 8 — Testing + final report  `[ ]`
-- [ ] Flow tests: signup→onboarding→dashboard→project; collaboration; viewer denial; unauthorised URL
-- [ ] Final report: files, migrations, env vars, permission model, external config, TODOs
+## Phase 8 — Testing + final report  `[x]`
+- [x] `test_user_flows.py`: new user (signup → onboarding → dashboard → project), returning user, admin, owner→editor, viewer denial, unauthorised URL — 192 tests total
+- [x] Browser smoke test (Playwright, local stack): 31 checks incl. terms gate, tour next/back/finish/not-again, sidebar collapse + tooltip + persistence, run analysis, share dialog with live lookup, bell → project, editor notes, viewer read-only, stranger denied, research/collaborations/settings/projects render, admin sidebar + users table, mobile drawer
+- [x] `docs/UPGRADE_REPORT.md` (deliverable §21), `.env.example`, `web/.env.local.example`, `CLAUDE.md` updated
 
 ## Deferred
 - [-] Stripe subscriptions / plan entitlements (kept credit packs; simulated checkout unchanged)

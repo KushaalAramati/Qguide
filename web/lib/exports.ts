@@ -25,7 +25,17 @@ export function guideRows(guides: any[], opt: any) {
   }));
 }
 
-const safe = (s: string) => (s || "project").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60);
+export const safeName = (s: string) => (s || "project").replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 60);
+const safe = safeName;
+
+export function downloadText(filename: string, text: string, type = "text/plain") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 export function exportGuidesCsv(proj: any, id: string, guides: any[], opt: any) {
   downloadCsv(`${safe(proj?.name)}_${id}_guides.csv`, guideRows(guides, opt));

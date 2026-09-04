@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Shell } from "@/components/Shell";
 import { Panel, Metric } from "@/components/ui";
 import { PageHeader, EmptyState, LoadingRows, ErrorState } from "@/components/PageHeader";
-import { api } from "@/lib/api";
+import { api, ProjectMeta, projectHref } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { BRANDING } from "@/lib/branding";
 
@@ -16,7 +16,7 @@ export default function DashboardPage() {
 
 function Dash() {
   const { account, refresh } = useAuth();
-  const [projects, setProjects] = useState<any[] | null>(null);
+  const [projects, setProjects] = useState<ProjectMeta[] | null>(null);
   const [err, setErr] = useState("");
 
   const load = useCallback(() => {
@@ -27,7 +27,8 @@ function Dash() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  const all = projects || [];
+  const all = (projects || []).filter((p) => !p.shared);
+  const shared = (projects || []).filter((p) => p.shared);
   const active = all.filter((p) => !p.archived);
   const totalGuides = all.reduce((s, p) => s + (p.n_guides || 0), 0);
   const recent = [...active].sort((a, b) => (b.created || "").localeCompare(a.created || "")).slice(0, 8);
@@ -69,7 +70,7 @@ function Dash() {
                 {recent.map((p) => (
                   <tr key={p.id}>
                     <td>
-                      <Link href={`/project/${p.id}`} className="text-brand hover:underline">{p.name}</Link>
+                      <Link href={projectHref(p)} className="text-brand hover:underline">{p.name}</Link>
                       <span className="ml-2 text-faint text-[10.5px] tabular-nums">{p.id}</span>
                     </td>
                     <td className="tabular-nums">{p.n_guides ?? "—"}</td>
@@ -86,11 +87,29 @@ function Dash() {
           <Panel title="next steps">
             <div className="flex flex-col divide-y divide-divider">
               <Action href="/new" title="New analysis" body="Design guides for a target sequence." />
+              <Action href="/collaborations" title="Collaborations" body={shared.length ? `${shared.length} project${shared.length === 1 ? "" : "s"} shared with you.` : "Projects shared with you by other researchers."} />
               <Action href="/account" title="Account & settings" body="Profile, password, usage history." />
               <Action href="/buy" title="Credits" body={`${account?.credits ?? 0} available · 5 per design run.`} />
               <Action href="/disclaimer" title="How to read the scores" body="What predictions mean and what to validate." />
             </div>
           </Panel>
+
+          {shared.length > 0 && (
+            <Panel title="shared with me" meta={`${shared.length}`} bodyClass="">
+              <table className="dtable">
+                <tbody>
+                  {shared.slice(0, 5).map((p) => (
+                    <tr key={p.uid || p.id}>
+                      <td><Link href={projectHref(p)} className="text-brand hover:underline">{p.name}</Link>
+                        <span className="block text-[10.5px] text-faint">{p.owner_name || p.owner_email}</span></td>
+                      <td className="text-right"><span className={p.role === "EDITOR" ? "tag-good" : "tag-warn"}>{p.role.toLowerCase()}</span></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {shared.length > 5 && <div className="px-3 py-1.5 text-[10.5px]"><Link href="/collaborations" className="text-brand hover:underline">all {shared.length} →</Link></div>}
+            </Panel>
+          )}
 
           {recent.length > 0 && (
             <Panel title="candidate guides per project">

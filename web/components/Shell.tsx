@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { ValidationBanner } from "@/components/ValidationBanner";
 import { Sidebar, useSidebarState } from "@/components/Sidebar";
 import { OnboardingTour } from "@/components/Onboarding";
+import { NotificationBell } from "@/components/NotificationBell";
 import { LogoMark, LegalFooter } from "@/components/Brand";
 import { APP_SLUG, BRANDING } from "@/lib/branding";
 
@@ -47,6 +48,7 @@ export function Shell({ children }: { children: ReactNode }) {
     }
     const map: Record<string, string> = {
       "/new": "design --new", "/projects": "ls --projects", "/account": "settings --show",
+      "/collaborations": "ls --shared", "/research": "research --tools",
       "/buy": "credits --purchase", "/admin": "admin --console", "/dashboard": "status --overview",
     };
     return map[path] || map[Object.keys(map).find((k) => path.startsWith(k + "/")) || ""] || "status --overview";
@@ -101,6 +103,7 @@ export function Shell({ children }: { children: ReactNode }) {
             </Link>
           )}
           <span className="text-faint text-[10.5px] hidden sm:inline">{account.plan}</span>
+          <NotificationBell />
           <button onClick={signOut} className="md:hidden text-faint hover:text-ink" title="Sign out" aria-label="Sign out">⏻</button>
         </div>
 

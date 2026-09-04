@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import binascii
 import hashlib
+import json
 import os
 import re
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
-from sqlalchemy import Column, Float, Integer, String, Text, select, text
+import uuid
+
+from sqlalchemy import Column, Float, Index, Integer, String, Text, select, text
 
 from qguide.app import roles as roles_mod
 from qguide.app.db import Base, engine, session_scope
@@ -55,6 +58,8 @@ class User(Base):
     onboarding_completed = Column(Integer, nullable=False, default=0)
     onboarding_step = Column(Integer, nullable=False, default=0)
     onboarding_completed_at = Column(String(32))
+    # --- notification preferences, JSON (migration 0007) ---
+    notification_prefs = Column(Text)
 
 
 class Transaction(Base):
@@ -83,6 +88,62 @@ class Project(Base):
     response_json = Column(Text, nullable=False)
     folder_id = Column(String(32))          # nullable -> "unfiled"
     archived = Column(Integer, default=0)   # 0 = active, 1 = archived (soft state)
+    # Global identity (migration 0004). `email`+`pid` stays the owner's short
+    # handle; `uid` is what collaborators address the project by.
+    uid = Column(String(36), index=True)
+    # Research metadata (migration 0006). Organism/nuclease/outcome live in the
+    # stored request; these are the human annotations around it.
+    experiment_name = Column(String(255))
+    cell_line = Column(String(255))
+    target_gene = Column(String(255))
+    experiment_type = Column(String(64))
+    notes = Column(Text)
+    tags = Column(Text)             # JSON list of strings
+    citations = Column(Text)        # JSON list of {"label","url"|"doi"}
+    metadata_updated = Column(String(32))
+    metadata_updated_by = Column(String(255))
+
+
+class AnalysisTemplate(Base):
+    """Saved DesignRequest parameters (everything except the sequence) so a
+    researcher can re-apply a validated configuration to new targets."""
+    __tablename__ = "analysis_templates"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    owner_email = Column(String(255), nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    params_json = Column(Text, nullable=False)
+    created = Column(String(32), nullable=False)
+    updated = Column(String(32), nullable=False)
+
+
+class ProjectMembership(Base):
+    """Who, besides the owner, can open a project and what they may do.
+
+    Roles: OWNER (implicit -- the project row's `email`; an OWNER row is never
+    stored), EDITOR, VIEWER. See `qguide.app.access` for the permission rules.
+    """
+    __tablename__ = "project_memberships"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    project_uid = Column(String(36), nullable=False, index=True)
+    user_email = Column(String(255), nullable=False, index=True)
+    role = Column(String(16), nullable=False)
+    invited_by = Column(String(255))
+    created = Column(String(32), nullable=False)
+    __table_args__ = (Index("ix_membership_project_user", "project_uid", "user_email",
+                            unique=True),)
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_email = Column(String(255), nullable=False, index=True)
+    type = Column(String(48), nullable=False)
+    title = Column(String(255), nullable=False)
+    message = Column(Text)
+    link = Column(String(512))
+    read = Column(Integer, nullable=False, default=0)
+    created = Column(String(32), nullable=False)
 
 
 class Folder(Base):
@@ -360,7 +421,8 @@ def save_project(email: str, proj: Dict) -> None:
                           selected_guide=proj.get("selected_guide"),
                           n_guides=len(resp.guides), best_guide=resp.best_single_guide_id,
                           request_json=req.model_dump_json(),
-                          response_json=resp.model_dump_json()))
+                          response_json=resp.model_dump_json(),
+                          uid=proj.get("uid") or uuid.uuid4().hex))
 
 
 def list_projects_meta(email: str, include_archived: bool = True) -> List[Dict]:
@@ -373,14 +435,22 @@ def list_projects_meta(email: str, include_archived: bool = True) -> List[Dict]:
             arch = bool(getattr(p, "archived", 0) or 0)
             if arch and not include_archived:
                 continue
-            out.append({"id": p.pid, "name": p.name, "created": p.created, "elapsed": p.elapsed,
-                        "n_guides": p.n_guides, "best_guide": p.best_guide,
-                        "folder_id": getattr(p, "folder_id", None), "archived": arch})
+            out.append(_meta(p, arch))
         return out
 
 
+def _meta(p: Project, arch: Optional[bool] = None) -> Dict:
+    if arch is None:
+        arch = bool(getattr(p, "archived", 0) or 0)
+    return {"id": p.pid, "uid": getattr(p, "uid", None), "name": p.name, "created": p.created,
+            "elapsed": p.elapsed, "n_guides": p.n_guides, "best_guide": p.best_guide,
+            "folder_id": getattr(p, "folder_id", None), "archived": arch,
+            "owner_email": p.email}
+
+
 def _reconstruct(p: Project) -> Dict:
-    return {"id": p.pid, "name": p.name, "created": p.created, "elapsed": p.elapsed,
+    return {"id": p.pid, "uid": getattr(p, "uid", None), "owner_email": p.email,
+            "name": p.name, "created": p.created, "elapsed": p.elapsed,
             "selected_guide": p.selected_guide,
             "request": DesignRequest.model_validate_json(p.request_json),
             "response": DesignResponse.model_validate_json(p.response_json),
@@ -770,3 +840,456 @@ def update_onboarding(email: str, step: Optional[int] = None,
             if not completed:
                 u.onboarding_step = 0
         return _user_dict(u)["onboarding"]
+
+
+# --------------------------------------------------------------------------- #
+# Collaboration: project lookup by global id, memberships                       #
+# --------------------------------------------------------------------------- #
+def _find_project(s, email: str, ident: str) -> Optional[Project]:
+    """Resolve `ident` as a global uid first, then as the caller's own pid."""
+    ident = (ident or "").strip()
+    if not ident:
+        return None
+    p = s.scalars(select(Project).where(Project.uid == ident)).first()
+    if p is not None:
+        return p
+    return s.get(Project, {"email": email, "pid": ident})
+
+
+def resolve_project(email: str, ident: str) -> Optional[Dict]:
+    """Metadata for a project addressed by uid or (own) pid -- no payloads."""
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        p = _find_project(s, email, ident)
+        return _meta(p) if p else None
+
+
+def get_project_by_uid(uid: str) -> Optional[Dict]:
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        return _reconstruct(p) if p else None
+
+
+def membership_role(uid: str, email: str) -> Optional[str]:
+    """EDITOR / VIEWER for a collaborator, None otherwise (owner is not stored)."""
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        m = s.scalars(select(ProjectMembership).where(
+            ProjectMembership.project_uid == uid,
+            ProjectMembership.user_email == email)).first()
+        return m.role if m else None
+
+
+def list_members(uid: str) -> List[Dict]:
+    """Owner first, then collaborators, with display names."""
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        if p is None:
+            return []
+        rows = s.scalars(select(ProjectMembership).where(
+            ProjectMembership.project_uid == uid).order_by(ProjectMembership.id)).all()
+        emails = [p.email] + [m.user_email for m in rows]
+        users = {u.email: u for u in s.scalars(select(User).where(User.email.in_(emails))).all()}
+        out = [{"email": p.email, "name": users[p.email].name if p.email in users else p.email,
+                "role": "OWNER", "invited_by": None, "created": p.created}]
+        for m in rows:
+            u = users.get(m.user_email)
+            out.append({"email": m.user_email, "name": u.name if u else m.user_email,
+                        "role": m.role, "invited_by": m.invited_by, "created": m.created})
+        return out
+
+
+def upsert_member(uid: str, email: str, role: str, invited_by: str) -> Dict:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        m = s.scalars(select(ProjectMembership).where(
+            ProjectMembership.project_uid == uid,
+            ProjectMembership.user_email == email)).first()
+        created = m is None
+        if m is None:
+            m = ProjectMembership(project_uid=uid, user_email=email, role=role,
+                                  invited_by=invited_by, created=_now())
+            s.add(m)
+        else:
+            m.role = role
+        return {"email": email, "role": role, "created": created}
+
+
+def remove_member(uid: str, email: str) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        m = s.scalars(select(ProjectMembership).where(
+            ProjectMembership.project_uid == uid,
+            ProjectMembership.user_email == email)).first()
+        if m is None:
+            return False
+        s.delete(m)
+        return True
+
+
+def remove_all_members(uid: str) -> None:
+    with session_scope() as s:
+        for m in s.scalars(select(ProjectMembership).where(
+                ProjectMembership.project_uid == uid)).all():
+            s.delete(m)
+
+
+def list_shared_projects(email: str) -> List[Dict]:
+    """Projects shared WITH `email` (metadata + the caller's role + owner name)."""
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        rows = s.execute(select(ProjectMembership, Project).join(
+            Project, Project.uid == ProjectMembership.project_uid).where(
+            ProjectMembership.user_email == email).order_by(ProjectMembership.id.desc())).all()
+        owners = {p.email for _, p in rows}
+        names = {u.email: u.name for u in s.scalars(select(User).where(User.email.in_(owners))).all()} if owners else {}
+        out = []
+        for m, p in rows:
+            d = _meta(p)
+            d.update({"role": m.role, "shared": True, "owner_name": names.get(p.email, p.email),
+                      "folder_id": None, "archived": False})
+            out.append(d)
+        return out
+
+
+def member_counts(owner_email: str) -> Dict[str, int]:
+    """uid -> number of collaborators, for the owner's projects."""
+    from sqlalchemy import func
+    owner_email = (owner_email or "").strip().lower()
+    with session_scope() as s:
+        rows = s.execute(select(ProjectMembership.project_uid, func.count()).join(
+            Project, Project.uid == ProjectMembership.project_uid).where(
+            Project.email == owner_email).group_by(ProjectMembership.project_uid)).all()
+        return {uid: int(n) for uid, n in rows}
+
+
+def update_project_result(uid: str, resp: DesignResponse, elapsed: float) -> bool:
+    """Replace a project's stored result after an editor re-runs it in place."""
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        if p is None:
+            return False
+        p.response_json = resp.model_dump_json()
+        p.elapsed = elapsed
+        p.n_guides = len(resp.guides)
+        p.best_guide = resp.best_single_guide_id
+        if p.selected_guide not in {g.guide_id for g in resp.guides}:
+            p.selected_guide = resp.best_single_guide_id
+        return True
+
+
+def set_selected_guide(uid: str, guide_id: str) -> bool:
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        if p is None:
+            return False
+        p.selected_guide = guide_id
+        return True
+
+
+def rename_project_uid(uid: str, name: str) -> bool:
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        if p is None:
+            return False
+        p.name = (name or p.name).strip()
+        return True
+
+
+def delete_project_uid(uid: str) -> bool:
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        if p is None:
+            return False
+        for m in s.scalars(select(ProjectMembership).where(
+                ProjectMembership.project_uid == uid)).all():
+            s.delete(m)
+        s.delete(p)
+        return True
+
+
+def lookup_user(email: str) -> Optional[Dict]:
+    """Minimal public profile for the invite dialog (exact email match only)."""
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        u = s.get(User, email)
+        if not u or (getattr(u, "status", "active") or "active") != "active":
+            return None
+        return {"email": u.email, "name": u.name, "institution": getattr(u, "institution", None)}
+
+
+# --------------------------------------------------------------------------- #
+# Notifications (API surface lands with the notifications phase)               #
+# --------------------------------------------------------------------------- #
+def add_notification(email: str, ntype: str, title: str, message: str = "",
+                     link: Optional[str] = None) -> int:
+    email = (email or "").strip().lower()
+    prefs = get_notification_prefs(email)
+    if prefs.get(_pref_key(ntype)) is False:
+        return 0
+    with session_scope() as s:
+        n = Notification(user_email=email, type=ntype, title=title[:255], message=message,
+                         link=link, read=0, created=_now())
+        s.add(n)
+        s.flush()
+        return int(n.id)
+
+
+# --------------------------------------------------------------------------- #
+# Research tools: project metadata, templates                                  #
+# --------------------------------------------------------------------------- #
+METADATA_FIELDS = ("experiment_name", "cell_line", "target_gene", "experiment_type", "notes")
+
+
+def _loads(v, default):
+    try:
+        return json.loads(v) if v else default
+    except Exception:                                     # noqa: BLE001
+        return default
+
+
+def project_metadata(p: Project) -> Dict:
+    return {
+        "experiment_name": getattr(p, "experiment_name", None),
+        "cell_line": getattr(p, "cell_line", None),
+        "target_gene": getattr(p, "target_gene", None),
+        "experiment_type": getattr(p, "experiment_type", None),
+        "notes": getattr(p, "notes", None) or "",
+        "tags": _loads(getattr(p, "tags", None), []),
+        "citations": _loads(getattr(p, "citations", None), []),
+        "updated": getattr(p, "metadata_updated", None),
+        "updated_by": getattr(p, "metadata_updated_by", None),
+    }
+
+
+def get_metadata(uid: str) -> Optional[Dict]:
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        return project_metadata(p) if p else None
+
+
+def update_metadata(uid: str, patch: Dict, actor: str) -> Optional[Dict]:
+    with session_scope() as s:
+        p = s.scalars(select(Project).where(Project.uid == uid)).first()
+        if p is None:
+            return None
+        for f in METADATA_FIELDS:
+            if f in patch:
+                v = patch[f]
+                setattr(p, f, (v.strip() if isinstance(v, str) else v) or None)
+        if "tags" in patch:
+            tags = [str(t).strip() for t in (patch["tags"] or []) if str(t).strip()]
+            p.tags = json.dumps(sorted(set(tags), key=str.lower)[:50])
+        if "citations" in patch:
+            cites = []
+            for c in (patch["citations"] or [])[:50]:
+                if isinstance(c, dict) and (c.get("label") or c.get("url") or c.get("doi")):
+                    cites.append({"label": str(c.get("label") or "")[:255],
+                                  "url": str(c.get("url") or "")[:512],
+                                  "doi": str(c.get("doi") or "")[:128]})
+            p.citations = json.dumps(cites)
+        p.metadata_updated = _now()
+        p.metadata_updated_by = actor
+        return project_metadata(p)
+
+
+def all_tags(email: str) -> List[str]:
+    """Distinct tags across the caller's own projects (for autocomplete)."""
+    email = (email or "").strip().lower()
+    out = set()
+    with session_scope() as s:
+        for p in s.scalars(select(Project).where(Project.email == email)).all():
+            out.update(_loads(getattr(p, "tags", None), []))
+    return sorted(out, key=str.lower)
+
+
+def _tpl(t: AnalysisTemplate) -> Dict:
+    return {"id": t.id, "name": t.name, "description": t.description or "",
+            "params": _loads(t.params_json, {}), "created": t.created, "updated": t.updated}
+
+
+def list_templates(email: str) -> List[Dict]:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        rows = s.scalars(select(AnalysisTemplate).where(AnalysisTemplate.owner_email == email)
+                         .order_by(AnalysisTemplate.updated.desc())).all()
+        return [_tpl(t) for t in rows]
+
+
+def create_template(email: str, name: str, description: str, params: Dict) -> Dict:
+    email = (email or "").strip().lower()
+    now = _now()
+    with session_scope() as s:
+        t = AnalysisTemplate(owner_email=email, name=name.strip()[:255],
+                             description=(description or "")[:2000],
+                             params_json=json.dumps(params), created=now, updated=now)
+        s.add(t)
+        s.flush()
+        return _tpl(t)
+
+
+def update_template(email: str, tid: int, name: Optional[str], description: Optional[str],
+                    params: Optional[Dict]) -> Optional[Dict]:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        t = s.get(AnalysisTemplate, tid)
+        if t is None or t.owner_email != email:
+            return None
+        if name is not None and name.strip():
+            t.name = name.strip()[:255]
+        if description is not None:
+            t.description = description[:2000]
+        if params is not None:
+            t.params_json = json.dumps(params)
+        t.updated = _now()
+        return _tpl(t)
+
+
+def delete_template(email: str, tid: int) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        t = s.get(AnalysisTemplate, tid)
+        if t is None or t.owner_email != email:
+            return False
+        s.delete(t)
+        return True
+
+
+def project_summary_for_compare(uid: str) -> Optional[Dict]:
+    """Compact, comparison-friendly view of a stored project (no full payload)."""
+    proj = get_project_by_uid(uid)
+    if proj is None:
+        return None
+    resp = proj["response"]
+    req = resp.request
+    guides = resp.guides
+    sel = set(resp.optimized_set.selected_guide_ids)
+
+    def mean(vals):
+        vals = [v for v in vals if v is not None]
+        return round(sum(vals) / len(vals), 4) if vals else None
+
+    top = guides[:5]
+    return {
+        "uid": proj["uid"], "id": proj["id"], "name": proj["name"], "created": proj["created"],
+        "owner_email": proj["owner_email"],
+        "inputs": {"organism": req.organism, "cas_enzyme": req.cas_enzyme,
+                   "desired_outcome": getattr(req.desired_outcome, "value", req.desired_outcome),
+                   "risk_tolerance": req.risk_tolerance, "set_size": req.set_size,
+                   "optimizer_mode": resp.optimized_set.mode, "sequence_length": len(req.sequence),
+                   "cell_type": req.cell_type, "delivery_method": req.delivery_method},
+        "stats": {
+            "n_guides": len(guides),
+            "mean_on_target": mean([g.scores.on_target for g in guides]),
+            "mean_off_target_risk": mean([g.off_target.risk_score for g in guides]),
+            "mean_final_score": mean([g.final_score for g in guides]),
+            "high_risk_guides": sum(1 for g in guides if g.off_target.risk_score >= 0.4),
+            "set_mean_final_score": mean([g.final_score for g in guides if g.guide_id in sel]),
+            "set_mean_off_target_risk": mean([g.off_target.risk_score for g in guides if g.guide_id in sel]),
+        },
+        "optimized_set": {"guide_ids": list(resp.optimized_set.selected_guide_ids),
+                          "method": resp.optimized_set.method,
+                          "objective_value": resp.optimized_set.objective_value},
+        "top_guides": [{"guide_id": g.guide_id, "sequence": g.sequence, "pam": g.pam,
+                        "final_score": round(g.final_score, 4),
+                        "on_target": round(g.scores.on_target, 4),
+                        "off_target_risk": round(g.off_target.risk_score, 4),
+                        "in_set": g.guide_id in sel} for g in top],
+        "metadata": get_metadata(uid),
+    }
+
+
+def _n_dict(n: Notification) -> Dict:
+    return {"id": n.id, "type": n.type, "title": n.title, "message": n.message or "",
+            "link": n.link, "read": bool(n.read), "created": n.created}
+
+
+def list_notifications(email: str, limit: int = 30, unread_only: bool = False) -> List[Dict]:
+    email = (email or "").strip().lower()
+    limit = max(1, min(int(limit), 200))
+    with session_scope() as s:
+        q = select(Notification).where(Notification.user_email == email)
+        if unread_only:
+            q = q.where(Notification.read == 0)
+        rows = s.scalars(q.order_by(Notification.id.desc()).limit(limit)).all()
+        return [_n_dict(n) for n in rows]
+
+
+def unread_count(email: str) -> int:
+    from sqlalchemy import func
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        return int(s.scalar(select(func.count()).select_from(Notification).where(
+            Notification.user_email == email, Notification.read == 0)) or 0)
+
+
+def mark_read(email: str, nid: int, read: bool = True) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        n = s.get(Notification, nid)
+        if n is None or n.user_email != email:
+            return False
+        n.read = 1 if read else 0
+        return True
+
+
+def mark_all_read(email: str) -> int:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        rows = s.scalars(select(Notification).where(
+            Notification.user_email == email, Notification.read == 0)).all()
+        for n in rows:
+            n.read = 1
+        return len(rows)
+
+
+def delete_notification(email: str, nid: int) -> bool:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        n = s.get(Notification, nid)
+        if n is None or n.user_email != email:
+            return False
+        s.delete(n)
+        return True
+
+
+# --- notification preferences (stored as JSON on the user row) --------------- #
+NOTIFICATION_CATEGORIES = {
+    "collaboration": "Invitations, role changes and collaborators joining or leaving",
+    "project_activity": "Renames, re-runs, notes and deletions on shared projects",
+    "account": "Security and account alerts",
+    "billing": "Credits and subscription updates",
+}
+_TYPE_TO_CATEGORY = {
+    "project_invite": "collaboration", "project_role_changed": "collaboration",
+    "project_access_removed": "collaboration", "collaborator_left": "collaboration",
+    "project_renamed": "project_activity", "project_updated": "project_activity",
+    "analysis_completed": "project_activity", "project_deleted": "project_activity",
+    "security": "account", "account": "account",
+    "billing": "billing", "subscription": "billing",
+}
+
+
+def _pref_key(ntype: str) -> str:
+    return _TYPE_TO_CATEGORY.get(ntype, "account")
+
+
+def get_notification_prefs(email: str) -> Dict[str, bool]:
+    email = (email or "").strip().lower()
+    with session_scope() as s:
+        u = s.get(User, email)
+        raw = getattr(u, "notification_prefs", None) if u else None
+    prefs = {k: True for k in NOTIFICATION_CATEGORIES}
+    prefs.update({k: bool(v) for k, v in _loads(raw, {}).items() if k in prefs})
+    return prefs
+
+
+def set_notification_prefs(email: str, patch: Dict[str, bool]) -> Dict[str, bool]:
+    email = (email or "").strip().lower()
+    prefs = get_notification_prefs(email)
+    prefs.update({k: bool(v) for k, v in patch.items() if k in prefs})
+    with session_scope() as s:
+        u = s.get(User, email)
+        if u is not None:
+            u.notification_prefs = json.dumps(prefs)
+    return prefs

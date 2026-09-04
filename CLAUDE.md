@@ -14,6 +14,8 @@ via ensemble scoring + quantum-inspired multi-guide selection.
 - `docs/1_QGuide_Overview_and_Features.md`, `docs/2_QGuide_Development_Process_and_Algorithms.md`,
   `docs/3_QGuide_Future_Plans_and_Roadmap.md`
 - `DEPLOY.md` (deploy runbook)
+- `docs/UPGRADE_REPORT.md` + `docs/UPGRADE_CHECKLIST.md` (the SaaS layer: auth, roles,
+  collaboration, research tools, notifications, legal)
 
 ## Layout
 - `qguide/core/` — scientific pipeline: generate → score → off_target → context → outcome →
@@ -22,18 +24,27 @@ via ensemble scoring + quantum-inspired multi-guide selection.
   OutcomeMode registry), `off_target.py` (per-hit report + genome-engine stub), `optimization.py`
   (QUBO + simulated annealing + D-Wave `dimod`; modes classical/quantum_inspired/quantum_hardware;
   Top-N-vs-set comparison), `benchmark.py`, `report.py`, `pipeline.py` (orchestrator).
-- `qguide/app/` — FastAPI: `routes.py` (auth/credits/projects/run/admin + `/report` `/benchmark`
-  `/optimizer/modes`), `schemas.py` (Guide has `ensemble: EnsembleScore`), `store.py` (SQLAlchemy
-  via `DATABASE_URL`, hashed passwords), `auth.py` (JWT), `billing.py`.
-- `web/` — Next.js 14 + TS + Tailwind. `components/Ensemble.tsx` (score breakdown / off-target
-  hits / optimizer comparison), `components/viz/` (React-Three-Fiber 3D guide + DNA helix + map).
-- `qguide/frontend/streamlit_app.py` — the original Streamlit UI (still works).
+- `qguide/app/` — FastAPI: `routes.py` (auth/credits/projects/collaboration/notifications/admin +
+  `/report` `/benchmark` `/optimizer/modes`), `research.py` (research tools router), `schemas.py`
+  (Guide has `ensemble: EnsembleScore`), `store.py` (SQLAlchemy via `DATABASE_URL`, hashed
+  passwords), `auth.py` (JWT), `access.py` (project OWNER/EDITOR/VIEWER authorisation),
+  `roles.py` (app roles + permissions), `migrations.py` (versioned schema migrations),
+  `branding.py` (product identity — never hardcode the name), `legal.py`, `emailer.py`,
+  `ratelimit.py`, `billing.py`.
+- `web/` — Next.js 14 + TS + Tailwind. `lib/branding.ts` (product identity), `lib/nav.ts`
+  (sidebar), `components/Shell.tsx` + `Sidebar.tsx` (chrome), `components/Ensemble.tsx` (score
+  breakdown / off-target hits / optimizer comparison), `components/viz/` (React-Three-Fiber 3D
+  guide + DNA helix + map), `components/research/` (batch / templates / compare / history).
+- `qguide/frontend/streamlit_app.py` — the original Streamlit UI (still works; legacy prototype).
 
 ## Run / test (from repo root `D:\guideRna`)
-- Tests: `.venv\Scripts\python.exe -m pytest`  (**77 passing**)
+- Tests: `.venv\Scripts\python.exe -m pytest`  (**192 passing**)
 - API: `.venv\Scripts\python.exe -m uvicorn qguide.app.main:app --reload --port 8000`  (`/docs`)
 - UI: `cd web && npm run dev`  (set `web/.env.local` → `NEXT_PUBLIC_API_URL=http://localhost:8000`)
-- DB: SQLite locally (`DATABASE_URL` unset), Postgres in prod.
+- DB: SQLite locally (`DATABASE_URL` unset), Postgres in prod. Schema changes go in
+  `qguide/app/migrations.py` (append a numbered `Migration`; never edit a shipped one).
+- Env: see `.env.example`; production boot refuses the dev `JWT_SECRET` / `ALLOWED_ORIGINS=*`.
+  Locally set `QGUIDE_DEV_EMAIL=1` to see reset links without SMTP.
 
 ## Deploy (the recurring gotcha)
 - **Backend auto-deploys to Render** on every push to `main`. Verify: https://qguide-api.onrender.com/health
@@ -46,6 +57,9 @@ via ensemble scoring + quantum-inspired multi-guide selection.
 - Keep changes **additive** and tested; run pytest before committing.
 - Windows: use the **Bash tool `rm`** for cleanup (PowerShell `Remove-Item` is guarded under `D:\guideRna`).
 - Scoring/off-target/outcome/optimizer all have **swappable interfaces** — add real models there.
+- Every project route goes through `access.require_project()`; every privileged action is
+  enforced server-side (the UI hiding a button is never the control).
+- Product name / support email / legal entity come from `branding.py` / `lib/branding.ts`.
 
 ## Next up — accuracy roadmap (in order)
 1. **Doench Rule Set 2** on-target model (code-only, validated) — start here.

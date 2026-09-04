@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from qguide.app import auth, store
 from qguide.app.branding import BRANDING
 from qguide.app.routes import router
+from qguide.app.research import router as research_router
 
 log = logging.getLogger("qguide")
 
@@ -80,6 +81,7 @@ def _startup():
 
 
 app.include_router(router)
+app.include_router(research_router)
 
 
 @app.get("/")

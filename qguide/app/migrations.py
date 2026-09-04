@@ -43,6 +43,17 @@ class Migration:
     callable_step: Optional[Callable[[Engine], None]] = None
 
 
+def _backfill_project_uids(engine: Engine) -> None:
+    """Give every pre-existing project a global id (projects were keyed only by
+    owner email + per-user pid before collaboration existed)."""
+    import uuid
+    with engine.begin() as conn:
+        rows = conn.execute(text("SELECT email, pid FROM projects WHERE uid IS NULL")).fetchall()
+        for email, pid in rows:
+            conn.execute(text("UPDATE projects SET uid = :u WHERE email = :e AND pid = :p"),
+                         {"u": uuid.uuid4().hex, "e": email, "p": pid})
+
+
 def _is_already_applied(exc: Exception) -> bool:
     msg = str(exc).lower()
     return any(m in msg for m in _ALREADY_APPLIED_MARKERS)
@@ -140,5 +151,45 @@ MIGRATIONS: List[Migration] = [
             "UPDATE users SET onboarding_completed = 0 WHERE onboarding_completed IS NULL",
             "UPDATE users SET onboarding_step = 0 WHERE onboarding_step IS NULL",
         ),
+    ),
+    Migration(
+        version=4,
+        description="Global project ids + project memberships (collaboration)",
+        # The `project_memberships` table itself is created by the ORM
+        # (Base.metadata.create_all) which is portable; this step only adds the
+        # column older rows lack and backfills it.
+        statements=(
+            "ALTER TABLE projects ADD COLUMN uid VARCHAR(36)",
+            "CREATE INDEX IF NOT EXISTS ix_projects_uid ON projects (uid)",
+        ),
+        callable_step=_backfill_project_uids,
+    ),
+    Migration(
+        version=5,
+        description="Notifications table (created by the ORM) + read-state index",
+        statements=(
+            "CREATE INDEX IF NOT EXISTS ix_notifications_user_read"
+            " ON notifications (user_email, read)",
+        ),
+    ),
+    Migration(
+        version=6,
+        description="Research metadata on projects; analysis templates table via ORM",
+        statements=(
+            "ALTER TABLE projects ADD COLUMN experiment_name VARCHAR(255)",
+            "ALTER TABLE projects ADD COLUMN cell_line VARCHAR(255)",
+            "ALTER TABLE projects ADD COLUMN target_gene VARCHAR(255)",
+            "ALTER TABLE projects ADD COLUMN experiment_type VARCHAR(64)",
+            "ALTER TABLE projects ADD COLUMN notes TEXT",
+            "ALTER TABLE projects ADD COLUMN tags TEXT",
+            "ALTER TABLE projects ADD COLUMN citations TEXT",
+            "ALTER TABLE projects ADD COLUMN metadata_updated VARCHAR(32)",
+            "ALTER TABLE projects ADD COLUMN metadata_updated_by VARCHAR(255)",
+        ),
+    ),
+    Migration(
+        version=7,
+        description="Notification preferences on the user profile",
+        statements=("ALTER TABLE users ADD COLUMN notification_prefs TEXT",),
     ),
 ]

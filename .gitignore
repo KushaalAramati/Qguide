@@ -29,3 +29,5 @@ web/.next/
 .streamlit/secrets.toml
 *.db-journal
 _websrc.tgz
+_sync.tgz
+_backend.tgz

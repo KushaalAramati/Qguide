@@ -23,8 +23,10 @@ export const NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", glyph: "▦", exact: true, hint: "Overview and recent work" },
   { href: "/projects", label: "Projects", glyph: "▤", hint: "All projects and folders" },
   { href: "/new", label: "New Analysis", glyph: "＋", hint: "Design guides for a sequence" },
+  { href: "/collaborations", label: "Collaborations", glyph: "◎", hint: "Projects shared with you" },
+  { href: "/research", label: "Research Tools", glyph: "⌬", hint: "Batch runs, templates, comparison, history" },
   { href: "/buy", label: "Billing", glyph: "◈", hint: "Credits and purchases" },
-  { href: "/account", label: "Settings", glyph: "◷", hint: "Profile, security, usage" },
+  { href: "/account", label: "Settings", glyph: "◷", hint: "Profile, security, notifications" },
   { href: "/admin", label: "Admin Dashboard", glyph: "⌗", admin: true, hint: "Users, roles, system health" },
 ];
 
