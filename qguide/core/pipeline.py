@@ -19,12 +19,15 @@ from qguide.app.schemas import (
     Guide,
 )
 from qguide.core import (
+    biological_context,
     context_adjustment,
+    ensemble,
     explainability,
     guide_generator,
     off_target,
     optimization,
     outcome_prediction,
+    precision_score,
     scoring,
 )
 
@@ -69,10 +72,36 @@ def run_design(request: DesignRequest) -> DesignResponse:
     # Step 6 -- multi-objective final score (also sorts best-first)
     optimization.compute_final_scores(guides)
 
-    # Step 7 -- optimization (backend: classical SA or D-Wave dimod, per request)
-    optimizer = optimization.make_optimizer(getattr(request, "optimizer_backend", "sa"))
+    # Step 6b -- ensemble scoring layer: the spec's named components + goal-weighted
+    # final_qguide_score (additive; the legacy final_score still drives ordering for
+    # now). Switching the primary ranking to ensemble.final_qguide_score is a one-line
+    # change once the UI consumes it.
+    ensemble.score_guides(guides, request)
+
+    # Step 6c -- deeper biological-context annotation (exon/domain/transcript/variant/
+    # chromatin/cell-context). The default provider fills only what it can defensibly
+    # derive and leaves the rest UNKNOWN (which lowers confidence, never fabricated).
+    biological_context.annotate_guides(guides, request)
+
+    # Step 6d -- QGuide Precision Score: the single transparent 0..1 score assembled from
+    # every named biological/contextual component, with the full breakdown attached.
+    prec_preset = getattr(request, "optimizer_preset", "balanced")
+    if prec_preset not in precision_score.preset_names():
+        prec_preset = "balanced"
+    precision_score.compute_precision_scores(guides, request, preset=prec_preset)
+
+    # Step 7 -- optimization. Three honest modes (classical / quantum_inspired /
+    # quantum_hardware); all solve the SAME QUBO. Legacy optimizer_backend still
+    # maps to a mode for backward compatibility.
+    req_mode = getattr(request, "optimizer_mode", None)
+    if not req_mode:
+        req_mode = "quantum_inspired" if getattr(request, "optimizer_backend", "sa") == "dwave" else "classical"
+    optimizer, resolved_mode, mode_notes = optimization.make_optimizer_for_mode(req_mode)
+    preset = getattr(request, "optimizer_preset", "balanced")
     opt_result = optimization.optimize_guide_set(
-        guides, set_size=request.set_size, optimizer=optimizer)
+        guides, set_size=request.set_size, optimizer=optimizer,
+        mode=resolved_mode, extra_notes=mode_notes,
+        weights=optimization.get_weights(preset), preset=preset)
     best_single = optimization.best_single_guide(guides)
 
     # Step 10 -- explanations

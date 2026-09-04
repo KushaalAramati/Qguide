@@ -28,16 +28,158 @@ class Strand(str, Enum):
 
 class DesiredOutcome(str, Enum):
     KNOCKOUT = "knockout"
+    PRECISE_EDIT = "precise_edit"
+    BASE_EDIT = "base_edit"
+    PRIME_EDIT = "prime_edit"
+    CRISPRI = "crispri"            # repression
+    CRISPRA = "crispra"            # activation
+    SCREEN = "screen"             # screening / library design
+    # legacy / general modes (kept for backward compatibility)
     GENE_DISRUPTION = "gene_disruption"
     EXON_TARGETING = "exon_targeting"
     DELETION = "deletion"
     CUSTOM = "custom"
 
 
+class RiskTolerance(str, Enum):
+    LOW = "low"             # therapeutic-like: heavily penalise off-target/uncertainty
+    BALANCED = "balanced"
+    HIGH = "high"           # exploratory: tolerate more risk for activity
+
+
 class RiskCategory(str, Enum):
     LOW = "low"
     MODERATE = "moderate"
     HIGH = "high"
+
+
+class ModelScore(BaseModel):
+    """One named model's contribution to the ensemble (Stage A).
+
+    `kind` is one of: real | heuristic | provisional. Unavailable external ML models
+    ABSTAIN: `available=False` and `score=None` (never a fabricated number).
+    """
+    name: str
+    task: str                      # on_target | specificity | repair
+    kind: str                      # real | heuristic | provisional
+    available: bool = True
+    score: Optional[float] = None  # None => model abstained (unavailable)
+    citation: str = ""
+    note: str = ""
+
+
+class EnsembleScore(BaseModel):
+    """The spec's transparent, multi-component QGuide score.
+
+    Every component is in 0..1. `final_qguide_score` is a *visible* weighted
+    combination of them (weights depend on the user's goal + risk tolerance), not a
+    black box. Components listed in `provisional` are placeholders/heuristics whose
+    real (trained-model or genome-backed) implementations are not yet wired in.
+    """
+    on_target_score: float = 0.0
+    off_target_score: float = 0.0          # SAFETY: 1 - aggregate off-target risk
+    specificity_score: float = 0.0
+    desired_outcome_score: float = 0.0
+    repair_outcome_score: float = 0.0
+    genomic_context_score: float = 0.0
+    cell_context_score: float = 0.0
+    model_agreement_score: float = 0.0
+    uncertainty_score: float = 0.0         # 0 = confident, 1 = very uncertain
+    final_qguide_score: float = 0.0
+    weights: Dict[str, float] = Field(default_factory=dict)
+    contributions: Dict[str, float] = Field(default_factory=dict)  # signed, per term
+    provisional: List[str] = Field(default_factory=list)
+    confidence_label: str = "medium"       # high | medium | low
+    goal_profile: str = "knockout_balanced"
+    badges: List[str] = Field(default_factory=list)
+    model_scores: List[ModelScore] = Field(default_factory=list)  # per-model breakdown
+    limitations: List[str] = Field(default_factory=list)          # honest caveats
+    rationale: str = ""                                           # plain-English "why this score"
+
+
+# --------------------------------------------------------------------------- #
+# QGuide Precision Score (Part 1 of the formula-upgrade brief)                 #
+# --------------------------------------------------------------------------- #
+class PrecisionComponent(BaseModel):
+    """One transparent term of the QGuide Precision Score.
+
+    Every component records its raw 0..1 value, the weight applied, the signed
+    weighted contribution, whether it was AVAILABLE (real/proxy data) or had to
+    abstain (unknown), and an honest `source` label so the UI can colour-code it.
+    """
+    key: str
+    label: str
+    group: str = "positive"                # positive | penalty
+    raw: Optional[float] = None            # 0..1 (None => unavailable / abstained)
+    weight: float = 0.0
+    contribution: float = 0.0              # signed, actually applied to the score
+    available: bool = True
+    source: str = "heuristic"              # real | heuristic | proxy | provisional | unknown
+    note: str = ""
+
+
+class PrecisionScore(BaseModel):
+    """The QGuide Precision Score: a single 0..1 number assembled from many named,
+    reweightable biological/contextual components, with the full breakdown exposed.
+
+    Unavailable components ABSTAIN (they are dropped from the weighted mean and the
+    remaining weights are renormalised) and instead raise `uncertainty` / lower
+    `data_completeness` -- QGuide never invents a number for missing annotation.
+    """
+    score: float = 0.0                     # 0..1 QGuide Precision Score
+    confidence_label: str = "medium"       # high | medium | low
+    uncertainty: float = 0.0               # 0 = confident, 1 = very uncertain
+    data_completeness: float = 1.0         # fraction of components with real/proxy data
+    positive_mass: float = 0.0             # sum of applied positive weights
+    penalty_mass: float = 0.0              # sum of applied penalty weights
+    components: List[PrecisionComponent] = Field(default_factory=list)
+    missing: List[str] = Field(default_factory=list)       # unavailable component keys
+    provisional: List[str] = Field(default_factory=list)   # available-but-heuristic/proxy keys
+    preset: str = "balanced"
+    rationale: str = ""
+
+
+class BiologicalContext(BaseModel):
+    """Deeper biological variables most guide tools do not combine (Part 2).
+
+    Each field is 0..1 or ``None`` (unknown). ``None`` is the HONEST default when no
+    gene model / annotation / variant DB is configured -- it lowers confidence rather
+    than fabricating precision. `sources` records how each field was derived
+    (real | proxy | unknown) and `provider` names the annotation backend.
+    """
+    exon_importance: Optional[float] = None          # higher = more disruptive exon
+    domain_disruption: Optional[float] = None        # higher = hits functional domain
+    transcript_coverage: Optional[float] = None      # fraction of major isoforms affected
+    conservation: Optional[float] = None             # higher = more conserved target
+    variant_conflict_risk: Optional[float] = None    # higher = SNP/variant overlaps guide
+    chromatin_accessibility: Optional[float] = None  # higher = more accessible region
+    cell_context_confidence: Optional[float] = None  # model<->cell-type match confidence
+    sources: Dict[str, str] = Field(default_factory=dict)   # field -> real|proxy|unknown
+    notes: List[str] = Field(default_factory=list)
+    provider: str = "null_v0"
+    available: bool = False                          # True if ANY field was populated
+
+
+class OffTargetSeverity(BaseModel):
+    """Biological SEVERITY of predicted off-targets, distinct from raw risk count.
+
+    Not all off-targets are equal: a 2-mismatch hit in a coding exon of an essential
+    gene matters far more than a 3-mismatch intergenic hit. This aggregates the
+    per-hit report into a severity score that weights location, seed-region
+    mismatches, PAM strength and mismatch count. Essential-gene / disease overlap
+    needs a gene database -- until one is configured that count is ``None`` (unknown).
+    """
+    severity_score: float = 0.0            # 0..1 aggregate biological severity
+    high_severity_count: int = 0
+    coding_hits: int = 0                    # exon-annotated hits
+    regulatory_hits: int = 0               # promoter/enhancer-annotated hits
+    essential_gene_hits: Optional[int] = None   # None => essential/disease DB unavailable
+    seed_mismatch_hits: int = 0            # hits with a PAM-proximal (seed) mismatch
+    worst_annotation: str = "unknown"
+    worst_cfd: float = 0.0
+    components: Dict[str, float] = Field(default_factory=dict)
+    provisional: bool = True
+    note: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -72,12 +214,32 @@ class MismatchBin(BaseModel):
     count: int
 
 
+class OffTargetHit(BaseModel):
+    """A single predicted off-target site (genome-backed or synthetic/heuristic)."""
+    locus: str = "synthetic"                   # e.g. "chr1:1,234,567" or a descriptor
+    position: int = -1
+    strand: str = "+"
+    mismatches: int = 0
+    mismatch_positions: List[int] = Field(default_factory=list)
+    pam: str = ""
+    cfd_score: float = 0.0                     # 0..1, CFD/MIT-style (placeholder for now)
+    annotation: str = "unknown"                # exon | promoter | enhancer | intron | intergenic
+    severity: RiskCategory = RiskCategory.LOW
+    explanation: str = ""
+    provisional: bool = True                    # True until genome-backed alignment is used
+
+
 class OffTargetReport(BaseModel):
     risk_score: float = 0.0                    # 0 (safe) .. 1 (dangerous)
     risk_category: RiskCategory = RiskCategory.LOW
     potential_off_target_count: int = 0
     mismatch_distribution: List[MismatchBin] = Field(default_factory=list)
     concerning_regions: List[Dict[str, object]] = Field(default_factory=list)
+    hits: List[OffTargetHit] = Field(default_factory=list)
+    aggregate_burden: float = 0.0              # severity-weighted total, not just count
+    severity: Optional["OffTargetSeverity"] = None  # biological severity aggregation
+    genome_backed: bool = False
+    warning: str = ""
     method: str = "heuristic_v1"
 
 
@@ -124,6 +286,9 @@ class Guide(BaseModel):
 
     final_score: float = 0.0
     final_breakdown: Dict[str, float] = Field(default_factory=dict)
+    ensemble: EnsembleScore = Field(default_factory=EnsembleScore)
+    precision: PrecisionScore = Field(default_factory=PrecisionScore)   # QGuide Precision Score
+    bio_context: BiologicalContext = Field(default_factory=BiologicalContext)
     confidence: float = 0.0
     warnings: List[str] = Field(default_factory=list)
     explanation: str = ""
@@ -152,11 +317,16 @@ class DesignRequest(BaseModel):
     temperature: Optional[float] = None       # Celsius
     expression_level: Optional[str] = None    # low | medium | high
 
+    risk_tolerance: str = "balanced"           # low | balanced | high (affects weights)
+
     # Knobs ------------------------------------------------------------------- #
     guide_length: Optional[int] = None
     max_guides: int = 200                      # cap on candidates carried forward
     set_size: int = 3                          # N for "best N-guide set"
-    optimizer_backend: str = "sa"              # "sa" | "dwave" (quantum-inspired)
+    selection_mode: str = "set"                # "individual" | "set"
+    optimizer_mode: str = "classical"          # classical | quantum_inspired | quantum_hardware
+    optimizer_backend: str = "sa"              # legacy: "sa" | "dwave"
+    optimizer_preset: str = "balanced"         # QUBO weight preset (see optimization.PRESETS)
 
     model_config = ConfigDict(use_enum_values=True)
 
@@ -165,9 +335,24 @@ class OptimizationResult(BaseModel):
     selected_guide_ids: List[str]
     objective_value: float
     method: str
+    mode: str = "classical"                    # classical | quantum_inspired | quantum_hardware
     iterations: int
     rejected_explanations: Dict[str, str] = Field(default_factory=dict)
     tradeoffs: List[str] = Field(default_factory=list)
+    # Top-N-by-individual-score vs the optimized set (the value of optimizing)
+    top_n_individual: List[str] = Field(default_factory=list)
+    expected_outcome_delta: float = 0.0        # optimized mean score - top-N mean score
+    off_target_delta: float = 0.0              # optimized mean risk - top-N mean risk
+    comparison_note: str = ""
+    # QUBO configuration + aggregate set metrics (Feature 2)
+    preset: str = "balanced"
+    weights: Dict[str, float] = Field(default_factory=dict)
+    set_expected_outcome: float = 0.0          # mean quality_i of the set (0..1)
+    set_off_target_burden: float = 0.0         # mean off-target risk of the set
+    set_diversity: float = 0.0                 # 1 - mean pairwise redundancy
+    set_uncertainty: float = 0.0               # mean ensemble uncertainty
+    quality_by_guide: Dict[str, float] = Field(default_factory=dict)
+    risk_by_guide: Dict[str, float] = Field(default_factory=dict)
 
 
 class DesignResponse(BaseModel):

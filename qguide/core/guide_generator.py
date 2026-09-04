@@ -87,7 +87,13 @@ def _scan_strand(seq: str, profile: CasProfile) -> List[Dict]:
     forward reference frame for the minus strand.
     """
     glen = profile.guide_length
-    pam_re = re.compile(profile.pam_regex())
+    # Enumerate ALL PAM positions, INCLUDING overlapping ones. A plain finditer is
+    # non-overlapping, which silently drops a valid guide when its PAM overlaps another
+    # NGG one base away (e.g. EMX1's canonical `GGG` PAM sits right after an `A`, so the
+    # upstream `AGG` frame consumes it and the published guide is never emitted). A
+    # lookahead makes every PAM start position match, so overlapping guides are all kept
+    # -- matching how real designers (CRISPOR/CHOPCHOP) enumerate candidate PAMs.
+    pam_re = re.compile("(?=(" + profile.pam_regex() + "))")
     plen = len(profile.pam)
     hits: List[Dict] = []
 

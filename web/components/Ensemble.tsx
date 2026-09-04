@@ -1,0 +1,356 @@
+"use client";
+import { BarRow, CardTitle, Pill } from "./ui";
+import type { Tone } from "./ui";
+
+// Tones, not hexes: the palette lives in the theme tokens so both modes track it.
+const ACCENT = "accent" as const;   // the score you act on
+const SERIES = "series" as const;   // neutral quantitative context
+const AMBER  = "warn" as const;     // provisional / medium
+const RED    = "bad" as const;      // high risk
+
+// --------------------------------------------------------------------------- //
+// QGuide Precision Score — the new outcome-first individual score              //
+// --------------------------------------------------------------------------- //
+function SourceBadge({ source }: { source: string }) {
+  const map: Record<string, string> = {
+    real: "kind-real",
+    heuristic: "kind-prov",
+    proxy: "kind-prov",
+    provisional: "kind-prov",
+    unknown: "kind-na",
+  };
+  return <span className={`${map[source] || "kind-na"} ml-0`}>{source}</span>;
+}
+
+function ComponentRow({ c }: { c: any }) {
+  const positive = c.group === "positive";
+  if (!c.available) {
+    return (
+      <div className="flex items-center gap-2 text-sm py-0.5 opacity-70">
+        <span className="flex-1 truncate" title={c.note}>{c.label}</span>
+        <SourceBadge source="unknown" />
+        <span className="w-16 text-right text-[11px] text-muted italic">abstains</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 text-sm py-0.5" title={c.note}>
+      <span className="flex-1 truncate">{c.label}</span>
+      <SourceBadge source={c.source} />
+      <div className="w-24 h-[6px] bg-track overflow-hidden">
+        <div
+          style={{ width: `${Math.max(0, Math.min(100, (c.raw ?? 0) * 100))}%` }}
+          className={`h-full ${positive ? "bg-brand" : "bg-warn"}`} />
+      </div>
+      <span className="w-9 text-right font-mono text-[11px]">{(c.raw ?? 0).toFixed(2)}</span>
+      <span className={`w-12 text-right font-mono text-[11px] ${c.contribution >= 0 ? "text-brand" : "text-bad"}`}>
+        {c.contribution >= 0 ? "+" : ""}{Number(c.contribution).toFixed(3)}
+      </span>
+    </div>
+  );
+}
+
+export function PrecisionPanel({ p }: { p: any }) {
+  if (!p || !Array.isArray(p.components) || p.components.length === 0) return null;
+  const positives = p.components.filter((c: any) => c.group === "positive" && c.available)
+    .sort((a: any, b: any) => b.contribution - a.contribution);
+  const penalties = p.components.filter((c: any) => c.group === "penalty" && c.available)
+    .sort((a: any, b: any) => a.contribution - b.contribution);
+  const abstained = p.components.filter((c: any) => !c.available);
+  const confKind = p.confidence_label === "high" ? "good" : p.confidence_label === "low" ? "bad" : "warn";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <CardTitle>QGuide Precision Score</CardTitle>
+        <span className="text-[17px] text-brand tabular-nums tracking-tightest">{Number(p.score).toFixed(3)}</span>
+      </div>
+      <div className="flex items-center gap-2 text-xs text-muted mb-2">
+        <Pill value={`${p.confidence_label} confidence`} kind={confKind as any} />
+        <span>data completeness <b>{Math.round((p.data_completeness ?? 0) * 100)}%</b></span>
+        <span>· uncertainty <b>{Number(p.uncertainty ?? 0).toFixed(2)}</b></span>
+      </div>
+
+      <div className="label mt-2 mb-0.5">Positive drivers</div>
+      {positives.map((c: any) => <ComponentRow key={c.key} c={c} />)}
+
+      <div className="label mt-3 mb-0.5">Penalties</div>
+      {penalties.map((c: any) => <ComponentRow key={c.key} c={c} />)}
+
+      {abstained.length > 0 && (
+        <>
+          <div className="label mt-3 mb-0.5">Abstained — no data (raises uncertainty, never guessed)</div>
+          {abstained.map((c: any) => <ComponentRow key={c.key} c={c} />)}
+        </>
+      )}
+
+      {p.rationale && (
+        <div className="text-[12px] text-ink bg-bg rounded-lg p-2 mt-3">{p.rationale}</div>
+      )}
+      <div className="text-[10px] text-muted mt-2">
+        Score = (Σ positive − Σ penalty) / available positive weight. Unavailable components
+        abstain and raise uncertainty rather than being fabricated. Preset: <b>{p.preset}</b>.
+      </div>
+    </div>
+  );
+}
+
+export function OffTargetSeverityPanel({ sev }: { sev: any }) {
+  if (!sev) return null;
+  const kind = sev.severity_score >= 0.5 ? "bad" : sev.severity_score >= 0.25 ? "warn" : "good";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <CardTitle>Off-target severity</CardTitle>
+        <Pill value={Number(sev.severity_score).toFixed(2)} kind={kind as any} />
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm">
+        <div>Coding-exon hits <b>{sev.coding_hits}</b></div>
+        <div>Promoter/enhancer hits <b>{sev.regulatory_hits}</b></div>
+        <div>High-severity hits <b>{sev.high_severity_count}</b></div>
+        <div>Seed-mismatch hits <b>{sev.seed_mismatch_hits}</b></div>
+        <div>Worst region <b>{sev.worst_annotation}</b></div>
+        <div>Essential-gene hits <b>{sev.essential_gene_hits ?? "unknown"}</b></div>
+      </div>
+      <div className="text-[10px] text-muted mt-2">
+        Severity weights location, PAM-proximal seed mismatches and CFD — distinct from raw
+        off-target count. Essential/disease-gene overlap is unknown (no gene DB). {sev.provisional ? "Provisional (heuristic hits)." : ""}
+      </div>
+    </div>
+  );
+}
+
+export function BioContextPanel({ bc }: { bc: any }) {
+  if (!bc) return null;
+  const FIELDS: [string, string][] = [
+    ["exon_importance", "Exon importance"], ["domain_disruption", "Domain disruption"],
+    ["transcript_coverage", "Transcript coverage"], ["conservation", "Conservation"],
+    ["variant_conflict_risk", "Variant/SNP conflict"], ["chromatin_accessibility", "Chromatin accessibility"],
+    ["cell_context_confidence", "Cell-context confidence"],
+  ];
+  return (
+    <div>
+      <CardTitle>Biological context</CardTitle>
+      <div className="text-xs text-muted mb-2">Provider: <b>{bc.provider}</b>. Unknown fields abstain (lower confidence, never fabricated).</div>
+      {FIELDS.map(([k, label]) => {
+        const v = bc[k];
+        const src = (bc.sources || {})[k] || "unknown";
+        return (
+          <div key={k} className="flex items-center gap-2 text-sm py-0.5">
+            <span className="flex-1 truncate">{label}</span>
+            <SourceBadge source={src} />
+            <span className="w-14 text-right font-mono text-[11px]">
+              {v == null ? <span className="text-muted italic">unknown</span> : Number(v).toFixed(2)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const TASK_LABEL: Record<string, string> = {
+  on_target: "On-target activity", specificity: "Specificity", repair: "Repair outcome",
+};
+
+function KindBadge({ kind, available }: { kind: string; available: boolean }) {
+  if (!available)
+    return <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-bg text-muted" title="Model not installed — abstains (no score)">provisional · abstains</span>;
+  const map: Record<string, string> = {
+    real: "bg-brand/10 text-brand", heuristic: "bg-warn/15 text-[#9A6818]",
+  };
+  return <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${map[kind] || "bg-bg text-muted"}`}>{kind}</span>;
+}
+
+function ModelBreakdown({ e }: { e: any }) {
+  const rows: any[] = Array.isArray(e.model_scores) ? e.model_scores : [];
+  if (!rows.length) return null;
+  return (
+    <div className="mt-3 border-t border-border pt-2">
+      <div className="label mb-1">Contributing models</div>
+      {["on_target", "specificity", "repair"].map((task) => {
+        const group = rows.filter((m) => m.task === task);
+        if (!group.length) return null;
+        return (
+          <div key={task} className="mb-2">
+            <div className="text-[11px] font-bold text-muted uppercase tracking-wide">{TASK_LABEL[task] || task}</div>
+            {group.map((m, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm py-0.5">
+                <span className="flex-1 truncate" title={m.note}>{m.name}</span>
+                <KindBadge kind={m.kind} available={m.available} />
+                <span className="w-12 text-right font-mono">{m.available && m.score != null ? Number(m.score).toFixed(2) : "\u2014"}</span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <div className="text-[10px] text-muted">Biological scores come from classical bioinformatics / ML models above; unavailable ML models abstain (—) rather than guess.</div>
+    </div>
+  );
+}
+
+const COMPONENT_LABELS: [string, string, Tone][] = [
+  // [ensemble field, label, tone]
+  ["on_target_score", "On-target", ACCENT],
+  ["desired_outcome_score", "Desired outcome", ACCENT],
+  ["off_target_score", "Off-target safety", ACCENT],
+  ["specificity_score", "Specificity", SERIES],
+  ["repair_outcome_score", "Repair outcome", SERIES],
+  ["genomic_context_score", "Genomic context", SERIES],
+  ["cell_context_score", "Cell context", SERIES],
+  ["model_agreement_score", "Model agreement", AMBER],
+];
+
+export function EnsembleBadges({ e }: { e: any }) {
+  if (!e) return null;
+  const kind = (b: string) =>
+    /high off-target|low confidence/i.test(b) ? "bad"
+      : /medium/i.test(b) ? "warn" : "good";
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {(e.badges || []).map((b: string, i: number) => (
+        <Pill key={i} value={b} kind={kind(b) as any} />
+      ))}
+    </div>
+  );
+}
+
+export function EnsemblePanel({ e }: { e: any }) {
+  if (!e) return null;
+  const prov = new Set(e.provisional || []);
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <CardTitle>Ensemble breakdown</CardTitle>
+        <span className="text-[13px] text-brand tabular-nums">
+          QGuide score {e.final_qguide_score?.toFixed(3)}
+        </span>
+      </div>
+      <div className="text-xs text-muted mb-2">Goal profile: <b>{e.goal_profile}</b> · confidence{" "}
+        <b>{e.confidence_label}</b></div>
+      {COMPONENT_LABELS.map(([field, label, tone]) => (
+        <div key={field} className="flex items-center gap-1">
+          <div className="flex-1">
+            <BarRow label={label} value={e[field] ?? 0} tone={tone} />
+          </div>
+          {prov.has(field) && <span className="text-[10px] text-warn font-bold" title="Provisional / placeholder component">prov</span>}
+        </div>
+      ))}
+      <BarRow label="Uncertainty" value={e.uncertainty_score ?? 0} tone={AMBER} />
+      {e.rationale && (
+        <div className="text-[11.5px] text-cell bg-well border border-divider p-2 mt-2 leading-relaxed">{e.rationale}</div>
+      )}
+      <ModelBreakdown e={e} />
+      {Array.isArray(e.limitations) && e.limitations.length > 0 && (
+        <div className="text-[11px] text-muted mt-2">
+          <b>Limitations</b>
+          <ul className="list-disc ml-4 mt-0.5">
+            {e.limitations.map((l: string, i: number) => <li key={i}>{l}</li>)}
+          </ul>
+        </div>
+      )}
+      {prov.size > 0 && (
+        <div className="text-[11px] text-muted mt-2">⚠ <b>prov</b> = provisional placeholder
+          component (heuristic pending a real trained/genome-backed model).</div>
+      )}
+    </div>
+  );
+}
+
+export function OffTargetHits({ report }: { report: any }) {
+  if (!report) return null;
+  const hits = report.hits || [];
+  const sevKind = (s: string) => (s === "high" ? "bad" : s === "moderate" ? "warn" : "good");
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <CardTitle>Predicted off-target sites</CardTitle>
+        <span className="text-xs text-muted">burden {report.aggregate_burden?.toFixed(2)}</span>
+      </div>
+      {report.warning && (
+        <div className="text-[10.5px] bg-warn/[0.06] border border-warn/30 text-warn p-2 my-2">
+          ⚠ {report.warning}
+        </div>
+      )}
+      {hits.length === 0 ? (
+        <div className="text-sm text-muted">No concerning off-target sites predicted.</div>
+      ) : (
+        <table className="w-full text-sm mt-1">
+          <thead><tr className="text-muted text-left text-xs uppercase">
+            {["Locus", "MM", "Positions", "PAM", "CFD*", "Annotation", "Severity"].map((h) => (
+              <th key={h} className="py-1 pr-3 whitespace-nowrap">{h}</th>))}
+          </tr></thead>
+          <tbody>
+            {hits.map((h: any, i: number) => (
+              <tr key={i} className="border-t border-border">
+                <td className="py-1.5 pr-3">{h.locus}</td>
+                <td className="pr-3">{h.mismatches}</td>
+                <td className="pr-3">{(h.mismatch_positions || []).join(", ") || "—"}</td>
+                <td className="pr-3">{h.pam}</td>
+                <td className="pr-3">{h.cfd_score?.toFixed(2)}</td>
+                <td className="pr-3">{h.annotation}</td>
+                <td className="pr-3"><Pill value={h.severity} kind={sevKind(h.severity) as any} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <div className="text-[11px] text-muted mt-2">*CFD-style score is a heuristic placeholder;
+        sites are provisional until genome-backed alignment is enabled.</div>
+    </div>
+  );
+}
+
+function SetMetric({ label, value, hint }: { label: string; value: any; hint?: string }) {
+  return (
+    <div className="card !p-3" title={hint}>
+      <div className="label">{label}</div>
+      <div className="text-[17px] text-brand tabular-nums tracking-tightest mt-0.5">{value}</div>
+    </div>
+  );
+}
+
+export function OptimizerComparison({ opt }: { opt: any }) {
+  if (!opt) return null;
+  const sign = (n: number) => (n >= 0 ? "+" : "") + n.toFixed(3);
+  const pct = (n: number) => `${((n ?? 0) * 100).toFixed(0)}%`;
+  return (
+    <div>
+      <div className="flex items-center justify-between">
+        <CardTitle>Optimized set vs. naive Top-N</CardTitle>
+        {opt.preset && <Pill value={`preset: ${opt.preset}`} kind={"good" as any} />}
+      </div>
+      <div className="text-xs text-muted mb-2">Optimizer: <b>{opt.mode}</b> ({opt.method})</div>
+
+      <div className="text-[10.5px] bg-well border border-divider text-muted p-2 mb-3 leading-relaxed">
+        Biological scores are computed by classical bioinformatics / ML models. Quantum-inspired
+        optimization only searches guide <b>combinations</b> under the QUBO objective — it does not
+        predict biology.
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 text-sm">
+        <div className="card !p-3">
+          <div className="label">Top-N by individual score</div>
+          <div className="font-bold">{(opt.top_n_individual || []).join(", ") || "—"}</div>
+        </div>
+        <div className="card !p-3">
+          <div className="label">Optimized set</div>
+          <div className="font-bold text-brand">{(opt.selected_guide_ids || []).join(", ")}</div>
+        </div>
+      </div>
+
+      {/* aggregate set metrics folded into the QUBO */}
+      <div className="grid grid-cols-4 gap-3 mt-3">
+        <SetMetric label="Expected outcome" value={pct(opt.set_expected_outcome)} hint="Mean quality_i of the set" />
+        <SetMetric label="Off-target burden" value={pct(opt.set_off_target_burden)} hint="Mean off-target risk (lower is better)" />
+        <SetMetric label="Diversity" value={pct(opt.set_diversity)} hint="1 - mean pairwise redundancy (higher = more spread)" />
+        <SetMetric label="Uncertainty" value={pct(opt.set_uncertainty)} hint="Mean ensemble uncertainty (lower is better)" />
+      </div>
+
+      <div className="flex gap-4 mt-3 text-sm">
+        <div>Δ mean score <b>{sign(opt.expected_outcome_delta ?? 0)}</b></div>
+        <div>Δ mean off-target <b>{sign(opt.off_target_delta ?? 0)}</b></div>
+      </div>
+      <div className="text-sm text-muted mt-2">{opt.comparison_note}</div>
+    </div>
+  );
+}

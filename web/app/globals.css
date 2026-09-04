@@ -1,0 +1,203 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================================
+   QGuide — terminal design system.
+
+   One token set, two modes: light is "Stone", dark is "Charcoal".
+   Values are space-separated RGB channels so Tailwind opacity modifiers
+   (bg-brand/10, border-warn/30, …) keep working.
+
+   Colour is reserved for four meanings and nothing else:
+     accent  selection, healthy state, headline value
+     series  neutral quantitative bars
+     warn    provisional model, medium risk
+     bad     high risk, failure
+   Everything structural is neutral. A fifth meaning wants weight or
+   position, not another hue.
+   ========================================================================== */
+
+:root {
+  /* surfaces */
+  --qg-bg:          215 212 204;   /* app ground */
+  --qg-panel:       226 223 216;   /* panel / card */
+  --qg-panel2:      206 202 191;   /* panel header, table head */
+  --qg-deep:        203 199 189;   /* rail + status bar */
+  --qg-input:       236 234 228;   /* inputs, code wells */
+  /* lines */
+  --qg-line:        176 172 161;
+  --qg-line2:       192 188 177;
+  /* text */
+  --qg-txt:          38  37  31;
+  --qg-td:           48  47  42;
+  --qg-h1:           25  24  20;
+  --qg-dim:          85  83  76;
+  --qg-faint:       120 117 108;
+  --qg-locus:        85  83  76;
+  /* mark tracks */
+  --qg-meter:       196 192 181;
+  --qg-be2:         174 170 158;
+  /* semantic */
+  --qg-accent:       60  90 100;
+  --qg-accent-soft: 197 210 214;
+  --qg-series:       95 107 117;
+  --qg-warn:        119 103  63;
+  --qg-bad:         125  80  73;
+  --qg-alt:         105 101 122;
+  /* table zebra */
+  --qg-zebra: rgba(0, 0, 0, 0.028);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --qg-bg:           23  24  26;
+  --qg-panel:        29  31  34;
+  --qg-panel2:       35  38  41;
+  --qg-deep:         20  21  23;
+  --qg-input:        25  27  30;
+  --qg-line:         52  56  60;
+  --qg-line2:        42  45  49;
+  --qg-txt:         211 213 212;
+  --qg-td:          192 196 195;
+  --qg-h1:          232 234 233;
+  --qg-dim:         148 152 149;
+  --qg-faint:       107 112 109;
+  --qg-locus:       148 152 149;
+  --qg-meter:        43  47  50;
+  --qg-be2:          63  67  71;
+  --qg-accent:      132 167 149;
+  --qg-accent-soft:  44  63  55;
+  --qg-series:      127 143 156;
+  --qg-warn:        179 146  87;
+  --qg-bad:         173 111 103;
+  --qg-alt:         143 136 163;
+  --qg-zebra: rgba(255, 255, 255, 0.014);
+  color-scheme: dark;
+}
+
+/* Follow the OS when the user has not chosen explicitly. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --qg-bg:           23  24  26;
+    --qg-panel:        29  31  34;
+    --qg-panel2:       35  38  41;
+    --qg-deep:         20  21  23;
+    --qg-input:        25  27  30;
+    --qg-line:         52  56  60;
+    --qg-line2:        42  45  49;
+    --qg-txt:         211 213 212;
+    --qg-td:          192 196 195;
+    --qg-h1:          232 234 233;
+    --qg-dim:         148 152 149;
+    --qg-faint:       107 112 109;
+    --qg-locus:       148 152 149;
+    --qg-meter:        43  47  50;
+    --qg-be2:          63  67  71;
+    --qg-accent:      132 167 149;
+    --qg-accent-soft:  44  63  55;
+    --qg-series:      127 143 156;
+    --qg-warn:        179 146  87;
+    --qg-bad:         173 111 103;
+    --qg-alt:         143 136 163;
+    --qg-zebra: rgba(255, 255, 255, 0.014);
+    color-scheme: dark;
+  }
+}
+
+/* Slightly denser base than browser default — this is a data tool, and every
+   rem-based size in Tailwind scales with it. */
+html { font-size: 15px; }
+
+body {
+  background: rgb(var(--qg-bg));
+  color: rgb(var(--qg-txt));
+  font-family: var(--font-plex-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: -0.015em;
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection { background: rgb(var(--qg-accent) / 0.28); }
+
+/* Scrollbars that belong to the surface rather than the OS. */
+* { scrollbar-color: rgb(var(--qg-line)) transparent; scrollbar-width: thin; }
+*::-webkit-scrollbar { width: 9px; height: 9px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb { background: rgb(var(--qg-line)); }
+*::-webkit-scrollbar-thumb:hover { background: rgb(var(--qg-faint)); }
+
+@layer components {
+  /* ---- panels ------------------------------------------------------------ */
+  .card { @apply bg-surface border border-border p-4; }
+
+  /* Panel with a titled header strip — the dominant container in this system. */
+  .panel { @apply bg-surface border border-border; }
+  .panel-head {
+    @apply flex items-center gap-2 px-3 py-1.5 bg-raised border-b border-border
+           text-[10px] tracking-[0.15em] text-muted uppercase;
+  }
+  .panel-head .meta { @apply ml-auto normal-case tracking-normal text-[10.5px] text-faint; }
+  .panel-body { @apply p-3; }
+
+  /* ---- type -------------------------------------------------------------- */
+  .label { @apply text-[10px] tracking-[0.14em] uppercase text-faint; }
+  .num   { @apply tabular-nums; }
+  .seqtext { @apply text-seq tracking-[-0.03em]; }
+
+  /* ---- controls ---------------------------------------------------------- */
+  .btn {
+    @apply border border-border bg-surface text-muted px-3 py-1.5 text-[12px]
+           transition-colors hover:text-ink hover:border-faint
+           disabled:opacity-45 disabled:cursor-not-allowed;
+  }
+  .btn-primary { @apply btn bg-brand border-brand text-bg font-medium hover:bg-brand hover:text-bg; }
+  .btn-ghost   { @apply btn; }
+
+  .input {
+    @apply w-full border border-border bg-well px-2.5 py-1.5 text-ink text-[12.5px]
+           outline-none placeholder:text-faint focus:border-brand;
+  }
+
+  /* Segmented control — replaces radio groups and dropdown-heavy filters. */
+  .seg { @apply inline-flex border border-border; }
+  .seg > * { @apply px-3 py-1 text-[11.5px] text-muted border-r border-border last:border-r-0 cursor-pointer; }
+  .seg > .on { @apply bg-brand/10 text-brand; }
+
+  /* ---- tags -------------------------------------------------------------- */
+  /* Square, not a lozenge: these sit inside dense numeric tables. */
+  .pill { @apply inline-block px-1.5 py-0.5 text-[10.5px] font-semibold; }
+  .tag-good { @apply pill bg-brand/[0.12] text-brand; }
+  .tag-warn { @apply pill bg-warn/[0.14] text-warn; }
+  .tag-bad  { @apply pill bg-bad/[0.14] text-bad; }
+  /* Model provenance — always visible, never decorative. */
+  .kind { @apply text-[9px] tracking-[0.1em] uppercase px-1 py-px ml-2; }
+  .kind-real { @apply kind bg-brand/[0.12] text-brand; }
+  .kind-prov { @apply kind bg-warn/[0.14] text-warn; }
+  .kind-na   { @apply kind bg-track text-faint; }
+
+  /* ---- data tables ------------------------------------------------------- */
+  .dtable { @apply w-full border-collapse; }
+  .dtable th {
+    @apply text-left text-[9.5px] tracking-[0.14em] uppercase font-normal text-faint
+           px-3 py-1.5 bg-raised border-b border-border;
+  }
+  .dtable td { @apply px-3 py-1.5 text-[11.5px] text-cell border-b border-divider; }
+  .dtable tr:last-child td { @apply border-b-0; }
+  .dtable tbody tr:nth-child(even) td { background: var(--qg-zebra); }
+  .dtable tr.is-selected td { @apply bg-brand/[0.08] text-brand; }
+  .dtable tr.is-selected td:first-child { box-shadow: inset 2px 0 0 rgb(var(--qg-accent)); }
+
+  /* ---- sidebar tooltip (collapsed state) ---------------------------------- */
+  .nav-tip {
+    @apply pointer-events-none absolute left-full top-1/2 -translate-y-1/2 ml-2 z-50
+           whitespace-nowrap border border-border bg-surface px-2.5 py-1.5 text-[11px]
+           leading-snug opacity-0 transition-opacity duration-100;
+  }
+  .group:hover > .nav-tip, .group:focus-within > .nav-tip { @apply opacity-100; }
+
+  /* ---- caveat ------------------------------------------------------------ */
+  /* Sits under the panel whose numbers it qualifies, never as a global bar. */
+  .caveat {
+    @apply border-t border-divider bg-warn/[0.06] px-3 py-2 text-[10.5px] leading-relaxed text-warn;
+  }
+}

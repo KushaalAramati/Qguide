@@ -1,11 +1,19 @@
-# Q-Guide V1 dependencies
+# Q-Guide V1 dependencies (full dev environment)
 fastapi>=0.110
 uvicorn[standard]>=0.29
 pydantic>=2.5
 pandas>=2.0
 numpy>=1.24
-biopython>=1.81
 plotly>=5.18
 streamlit>=1.32
+# API persistence + auth
+sqlalchemy>=2.0
+pyjwt>=2.8
+email-validator>=2.0
+psycopg2-binary>=2.9   # Postgres driver (Render); SQLite needs no driver
+# Quantum-inspired optimizer backend
+dimod>=0.12
+dwave-samplers>=1.3
+# Tests
 pytest>=8.0
-httpx>=0.27        # FastAPI TestClient
+httpx>=0.27            # FastAPI TestClient

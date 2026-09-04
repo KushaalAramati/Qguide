@@ -13,20 +13,69 @@ rest of Q-Guide is unchanged.
 """
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import List, Protocol
+
+
+def _stable_hash(s: str) -> int:
+    """Process-stable hash (unlike built-in ``hash``) for reproducible synthetic
+    annotations across runs, machines and deploys."""
+    return int(hashlib.md5(s.encode("utf-8")).hexdigest(), 16)
 
 from qguide.app.schemas import (
     Guide,
     MismatchBin,
+    OffTargetHit,
     OffTargetReport,
+    OffTargetSeverity,
     RiskCategory,
 )
+
+# Biological weight of the genomic context an off-target lands in. A coding-exon hit
+# is far more consequential than an intergenic one. (Essential-gene / disease overlap
+# would multiply this further, but that needs a gene DB -- see severity_profile.)
+_LOCATION_WEIGHT = {
+    "exon": 1.0, "promoter": 0.85, "enhancer": 0.80,
+    "intron": 0.40, "intergenic": 0.20, "unknown": 0.50,
+}
+_SEED_LEN = 10  # PAM-proximal seed for SpCas9-like enzymes
 
 
 class OffTargetEngine(Protocol):
     """Replaceable off-target backend (heuristic now, alignment-based later)."""
     def analyze(self, guide: Guide) -> OffTargetReport: ...
+
+
+class GenomeAlignmentOffTargetEngine:
+    """Interface for the real, genome-backed engine (Stage 4 / future).
+
+    A production implementation would: build/load a genome index (BWA/Bowtie),
+    enumerate near-matches with mismatches and bulges, filter by PAM, score each
+    site with CFD/MIT, and annotate exon/promoter/enhancer/conserved overlap. Until
+    an index is configured it returns a clear "not available" report rather than
+    pretending — no fake genome hits.
+    """
+
+    method = "genome_alignment_v0"
+
+    def __init__(self, genome_index_path: str | None = None):
+        self.genome_index_path = genome_index_path
+
+    def available(self) -> bool:
+        return bool(self.genome_index_path)
+
+    def analyze(self, guide: Guide) -> OffTargetReport:
+        if not self.available():
+            return OffTargetReport(
+                genome_backed=False,
+                warning=("Genome-backed off-target analysis requires a reference "
+                         "genome index (BWA/Bowtie). None is configured, so no "
+                         "genome-wide off-target search was performed."),
+                method=self.method,
+            )
+        raise NotImplementedError(
+            "Genome alignment backend not yet implemented — configure an aligner + index.")
 
 
 def categorize(risk: float) -> RiskCategory:
@@ -68,6 +117,35 @@ def _repetitive_motifs(seq: str) -> float:
     return score
 
 
+def _gc_richness(seq: str) -> float:
+    """GC-rich spacers have many more near-identical genomic sites, so they are more
+    promiscuous (the VEGFA-site-1 failure mode). 0 below ~55% GC, ramps to 1 at 100%.
+
+    This is an intrinsic *correlate* of genome-wide promiscuity, not a genome search --
+    it does not replace alignment, but it stops the heuristic from calling a GC-rich,
+    poly-G guide "specific" just because its seed happens to be non-repetitive."""
+    if not seq:
+        return 0.0
+    gc = sum(1 for b in seq if b in "GC") / len(seq)
+    return max(0.0, min(1.0, (gc - 0.55) / 0.45))
+
+
+def _longest_base_run(seq: str) -> int:
+    best = run = 0
+    prev = ""
+    for b in seq:
+        run = run + 1 if b == prev else 1
+        best = max(best, run)
+        prev = b
+    return best
+
+
+def _homopolymer_risk(seq: str) -> float:
+    """Long single-base runs (esp. poly-G/poly-C) are hallmarks of promiscuous,
+    hard-to-target spacers. 0 for runs <=3, ramps up beyond."""
+    return max(0.0, min(1.0, (_longest_base_run(seq) - 3) / 4.0))
+
+
 class HeuristicOffTargetEngine:
     """Default V1 engine -- no external dependencies."""
 
@@ -78,16 +156,26 @@ class HeuristicOffTargetEngine:
         seed = _seed_repetitiveness(seq)
         lowc = _low_complexity(seq)
         rep = _repetitive_motifs(seq)
+        gc_rich = _gc_richness(seq)
+        homo = _homopolymer_risk(seq)
 
-        # Weighted blend -> 0 (safe) .. 1 (dangerous). Seed weighted highest
-        # because PAM-proximal mismatches dominate SpCas9 specificity.
-        risk = min(1.0, 0.45 * seed + 0.35 * lowc + 0.20 * rep)
+        # Weighted blend -> 0 (safe) .. 1 (dangerous). Reweighted after validation
+        # against GUIDE-seq (Tsai 2015): the old formula leaned so hard on seed
+        # repetitiveness that it ranked the promiscuous poly-G VEGFA-site-1 guide as
+        # SAFER than the cleaner EMX1 guide -- backwards vs measured data. GC-richness
+        # and long single-base runs are now first-class terms (real intrinsic
+        # correlates of genome-wide promiscuity). This is still a HEURISTIC, not a
+        # genome search; genome-backed CFD remains required for true specificity.
+        risk = min(1.0, 0.25 * seed + 0.20 * lowc + 0.20 * rep
+                        + 0.20 * gc_rich + 0.15 * homo)
         category = categorize(risk)
 
         # Synthesise a count + mismatch distribution from the risk magnitude.
         count = int(round(risk * 40))
         distribution = self._mismatch_distribution(count, risk)
         regions = self._concerning_regions(guide, count, risk)
+        hits = self._hits(guide, count, risk)
+        burden = round(sum(h.cfd_score for h in hits) + 0.02 * count, 4)
 
         report = OffTargetReport(
             risk_score=round(risk, 4),
@@ -95,9 +183,53 @@ class HeuristicOffTargetEngine:
             potential_off_target_count=count,
             mismatch_distribution=distribution,
             concerning_regions=regions,
+            hits=hits,
+            aggregate_burden=burden,
+            genome_backed=False,
+            warning=("Off-target risk is a HEURISTIC estimate from intrinsic sequence "
+                     "features (seed repetitiveness, low complexity, tandem repeats, "
+                     "GC-richness and homopolymer runs — the last two added after "
+                     "GUIDE-seq validation). It is NOT a genome search and does not count "
+                     "real genomic off-targets. Full genome-backed analysis (BWA/Bowtie "
+                     "alignment + CFD/MIT scoring) requires a reference genome index, "
+                     "which is not configured."),
             method=self.method,
         )
         return report
+
+    @staticmethod
+    def _hits(guide: Guide, count: int, risk: float) -> List[OffTargetHit]:
+        """Synthetic per-hit report (clearly provisional). A genome-backed engine
+        would replace this with real aligned sites + CFD scores + annotations."""
+        if count == 0:
+            return []
+        strand = guide.strand if isinstance(guide.strand, str) else guide.strand.value
+        # Illustrative annotations, cycled so the UI has something to render.
+        annos = ["intergenic", "intron", "promoter", "exon", "enhancer"]
+        hits: List[OffTargetHit] = []
+        n = min(4, max(1, count // 6 + 1))
+        for i in range(n):
+            mm = i + 1                                   # 1,2,3,... mismatches
+            cfd = round(max(0.0, risk * (1.0 - 0.28 * mm)), 3)
+            sev = categorize(cfd)
+            # Deterministic annotation pick (Python's built-in hash() is per-process
+            # randomised, which made synthetic annotations — and thus severity / the
+            # QUBO's shared-off-target term — irreproducible across runs).
+            anno = annos[(_stable_hash(guide.guide_id) + i) % len(annos)]
+            # coding/regulatory hits are more concerning than intergenic
+            if anno in ("exon", "promoter") and sev == RiskCategory.LOW:
+                sev = RiskCategory.MODERATE
+            L = len(guide.sequence)
+            mmpos = sorted({(i * 7 + 3) % L, (i * 5 + 11) % L}) if mm >= 1 else []
+            hits.append(OffTargetHit(
+                locus=f"chr?:synthetic_{i+1}", position=-1, strand=strand,
+                mismatches=mm, mismatch_positions=mmpos[:mm], pam=guide.pam,
+                cfd_score=cfd, annotation=anno, severity=sev,
+                explanation=(f"{mm}-mismatch candidate in a {anno} region; "
+                             f"heuristic CFD-style score {cfd:.2f}."),
+                provisional=True,
+            ))
+        return hits
 
     @staticmethod
     def _mismatch_distribution(count: int, risk: float) -> List[MismatchBin]:
@@ -130,12 +262,90 @@ class HeuristicOffTargetEngine:
         return regions
 
 
+# --------------------------------------------------------------------------- #
+# Off-target SEVERITY (formula-upgrade brief, Part 2 item 9)                    #
+# --------------------------------------------------------------------------- #
+def severity_profile(report: OffTargetReport, spacer_len: int = 20) -> OffTargetSeverity:
+    """Aggregate a per-hit off-target report into a biological SEVERITY score.
+
+    Distinct from ``risk_score`` (a promiscuity magnitude): severity asks *how much
+    each predicted off-target would matter*, weighting where it lands (coding exon >
+    regulatory > intron > intergenic), whether the PAM-proximal seed is intact (a
+    seed mismatch largely disarms an off-target; a seed-intact hit is dangerous), and
+    the CFD-style activity. One severe coding hit dominates, plus cumulative burden.
+
+    Essential-gene / disease-gene overlap would raise this further but needs a gene
+    database; until one is configured ``essential_gene_hits`` is ``None`` (unknown).
+    """
+    hits = list(getattr(report, "hits", []) or [])
+    seed_start = max(0, spacer_len - _SEED_LEN)
+    if not hits:
+        return OffTargetSeverity(
+            severity_score=0.0, high_severity_count=0, coding_hits=0,
+            regulatory_hits=0, essential_gene_hits=None, seed_mismatch_hits=0,
+            worst_annotation="none", worst_cfd=0.0,
+            components={"max_hit": 0.0, "burden": 0.0, "location_weighted": 0.0},
+            provisional=not report.genome_backed,
+            note=("No predicted off-target hits to score." if report.genome_backed
+                  else "Severity computed over HEURISTIC (synthetic) hits — provisional "
+                       "until a genome-backed off-target search is configured."),
+        )
+
+    coding = regulatory = seed_mm = high = 0
+    hit_sevs: List[float] = []
+    worst_sev, worst_anno, worst_cfd = -1.0, "unknown", 0.0
+    for h in hits:
+        anno = (h.annotation or "unknown").lower()
+        loc_w = _LOCATION_WEIGHT.get(anno, 0.5)
+        if anno == "exon":
+            coding += 1
+        if anno in ("promoter", "enhancer"):
+            regulatory += 1
+        has_seed_mm = any(p >= seed_start for p in (h.mismatch_positions or []))
+        if has_seed_mm:
+            seed_mm += 1
+        # Seed mismatch disarms the off-target; a seed-intact hit stays dangerous.
+        seed_factor = 0.7 if has_seed_mm else 1.15
+        sev = max(0.0, min(1.0, float(h.cfd_score) * loc_w * seed_factor))
+        hit_sevs.append(sev)
+        if sev >= 0.5:
+            high += 1
+        if sev > worst_sev:
+            worst_sev, worst_anno, worst_cfd = sev, anno, float(h.cfd_score)
+
+    max_hit = max(hit_sevs)
+    burden = min(1.0, sum(hit_sevs) / 2.0)              # cumulative, saturating
+    location_weighted = sum(hit_sevs) / len(hit_sevs)
+    severity = max(0.0, min(1.0, 0.7 * max_hit + 0.3 * burden))
+
+    return OffTargetSeverity(
+        severity_score=round(severity, 4),
+        high_severity_count=high,
+        coding_hits=coding,
+        regulatory_hits=regulatory,
+        essential_gene_hits=None,                        # honest: no essential/disease DB
+        seed_mismatch_hits=seed_mm,
+        worst_annotation=worst_anno,
+        worst_cfd=round(worst_cfd, 4),
+        components={
+            "max_hit": round(max_hit, 4),
+            "burden": round(burden, 4),
+            "location_weighted": round(location_weighted, 4),
+        },
+        provisional=not report.genome_backed,
+        note=("Severity is a location/seed/CFD-weighted aggregate of the predicted "
+              "off-target hits. Essential-gene & disease-gene overlap is UNKNOWN "
+              "(no gene database configured)."),
+    )
+
+
 # Default singleton engine used by the pipeline.
 DEFAULT_ENGINE: OffTargetEngine = HeuristicOffTargetEngine()
 
 
 def analyze_off_target(guide: Guide, engine: OffTargetEngine = DEFAULT_ENGINE) -> Guide:
     guide.off_target = engine.analyze(guide)
+    guide.off_target.severity = severity_profile(guide.off_target, len(guide.sequence))
     if guide.off_target.risk_category == RiskCategory.HIGH:
         guide.warnings.append("High predicted off-target risk -- validate empirically.")
     return guide
@@ -168,14 +378,26 @@ def scale_report(report: OffTargetReport, factor: float) -> OffTargetReport:
             except (TypeError, ValueError):
                 pass
         regions.append(r2)
-    return OffTargetReport(
+    # Scale per-hit CFD scores + severities so the detailed report stays consistent.
+    hits = []
+    for h in report.hits:
+        cfd = round(min(1.0, h.cfd_score * factor), 3)
+        hits.append(h.model_copy(update={"cfd_score": cfd, "severity": categorize(cfd)}))
+    scaled = OffTargetReport(
         risk_score=round(new_risk, 4),
         risk_category=categorize(new_risk),
         potential_off_target_count=new_count,
         mismatch_distribution=dist,
         concerning_regions=regions,
+        hits=hits,
+        aggregate_burden=round(report.aggregate_burden * factor, 4),
+        genome_backed=report.genome_backed,
+        warning=report.warning,
         method=report.method + "+context",
     )
+    # Recompute severity over the context-scaled hits so it stays consistent.
+    scaled.severity = severity_profile(scaled)
+    return scaled
 
 
 # --------------------------------------------------------------------------- #
