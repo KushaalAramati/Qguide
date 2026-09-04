@@ -140,9 +140,9 @@ Subscription panel which already explains the current model honestly.
 
 ## 9. External configuration you must complete
 
-1. Set the production env vars above on Render (the API will refuse to start with the
-   dev JWT secret or `ALLOWED_ORIGINS=*` once `DATABASE_URL` is Postgres or
-   `ENVIRONMENT=production`).
+1. Set the production env vars above on Render. The API refuses to start in production
+   with the dev JWT secret or `QGUIDE_DEV_EMAIL=1`; `ALLOWED_ORIGINS=*`, a short secret,
+   empty `ADMIN_EMAILS` or missing SMTP are logged as loud warnings at startup.
 2. Configure SMTP (or set `EMAIL_BACKEND=console` knowingly) — without it, reset and
    invitation emails are written to the server log.
 3. `APP_BASE_URL` = your Vercel URL so emailed links resolve.

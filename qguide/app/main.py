@@ -53,22 +53,30 @@ def _is_production() -> bool:
 
 
 def _check_production_config() -> None:
-    """Fail fast on configuration that would be unsafe in production."""
-    problems = []
+    """Fail fast on configuration that would be outright dangerous in production
+    (a public dev signing key, or reset tokens surfaced in API responses); warn
+    loudly about the rest so a first deployment cannot take the service down."""
+    fatal, warn = [], []
     if auth.JWT_SECRET == auth.DEV_JWT_SECRET:
-        problems.append("JWT_SECRET is unset (using the insecure development key)")
-    if len(auth.JWT_SECRET) < 32:
-        problems.append("JWT_SECRET is shorter than 32 characters")
-    if "*" in _origins:
-        problems.append("ALLOWED_ORIGINS is '*' (set your web origin explicitly)")
+        fatal.append("JWT_SECRET is unset (using the insecure development key)")
+    elif len(auth.JWT_SECRET) < 32:
+        warn.append("JWT_SECRET is shorter than 32 characters")
     if os.environ.get("QGUIDE_DEV_EMAIL") == "1":
-        problems.append("QGUIDE_DEV_EMAIL=1 would expose password-reset tokens")
-    if not problems:
-        return
-    message = ("Unsafe production configuration: " + "; ".join(problems) + ".")
-    if _is_production():
-        raise RuntimeError(message)
-    log.warning("[dev] %s", message)
+        fatal.append("QGUIDE_DEV_EMAIL=1 would expose password-reset tokens")
+    if "*" in _origins:
+        warn.append("ALLOWED_ORIGINS is '*' (set your web origin explicitly)")
+    if not os.environ.get("ADMIN_EMAILS", "").strip():
+        warn.append("ADMIN_EMAILS is empty (no account will be promoted to admin)")
+    if not os.environ.get("SMTP_HOST"):
+        warn.append("no SMTP_HOST: password-reset and invitation emails go to the log only")
+    prod = _is_production()
+    if fatal:
+        message = "Unsafe production configuration: " + "; ".join(fatal) + "."
+        if prod:
+            raise RuntimeError(message)
+        log.warning("[dev] %s", message)
+    for w in warn:
+        log.warning("[%s] configuration: %s", "production" if prod else "dev", w)
 
 
 @app.on_event("startup")
